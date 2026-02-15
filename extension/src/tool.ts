@@ -8,11 +8,22 @@ import {
 	type ReadToolDetails,
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
+import { SCOPE_FULL } from "./constants.js";
 import { buildReadCacheMetaV1 } from "./meta.js";
-import { hashBytes } from "./object-store.js";
+import { hashBytes, loadObject, persistObjectIfAbsent } from "./object-store.js";
 import { normalizeOffsetLimit, parseTrailingRangeIfNeeded, scopeKeyForRange } from "./path.js";
-import { splitLines } from "./text.js";
-import type { ReadCacheMetaV1, ReadToolDetailsExt } from "./types.js";
+import { buildKnowledgeForLeaf, createReplayRuntimeState, overlaySet, type ReplayRuntimeState } from "./replay.js";
+import { compareSlices, splitLines } from "./text.js";
+import type { ReadCacheMetaV1, ReadToolDetailsExt, ScopeKey } from "./types.js";
+
+const UTF8_STRICT_DECODER = new TextDecoder("utf-8", { fatal: true });
+
+interface CurrentTextState {
+	bytes: Buffer;
+	text: string;
+	totalLines: number;
+	currentHash: string;
+}
 
 export const readToolSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
@@ -37,28 +48,21 @@ function withReadcacheDetails(details: ReadToolDetails | undefined, readcache: R
 	};
 }
 
-async function buildBaselineMeta(
-	ctx: ExtensionContext,
-	normalizedPath: string,
-	offset: number | undefined,
-	limit: number | undefined,
-): Promise<ReadCacheMetaV1> {
-	const fileBytes = await readFile(normalizedPath);
-	const text = fileBytes.toString("utf-8");
-	const lines = splitLines(text);
-	const totalLines = lines.length;
-	const range = normalizeOffsetLimit(offset, limit, totalLines);
+function attachMetaToBaseline(
+	baselineResult: AgentToolResult<ReadToolDetails | undefined>,
+	meta: ReadCacheMetaV1,
+): AgentToolResult<ReadToolDetailsExt | undefined> {
+	return {
+		...baselineResult,
+		details: withReadcacheDetails(baselineResult.details, meta),
+	};
+}
 
-	return buildReadCacheMetaV1({
-		pathKey: normalizedPath,
-		scopeKey: scopeKeyForRange(range.start, range.end, range.totalLines),
-		servedHash: hashBytes(fileBytes),
-		mode: "full",
-		totalLines: range.totalLines,
-		rangeStart: range.start,
-		rangeEnd: range.end,
-		bytes: fileBytes.byteLength,
-	});
+function buildMarkerResult(marker: string, meta: ReadCacheMetaV1): AgentToolResult<ReadToolDetailsExt | undefined> {
+	return {
+		content: [{ type: "text", text: marker }],
+		details: withReadcacheDetails(undefined, meta),
+	};
 }
 
 function buildBaselineInput(path: string, offset: number | undefined, limit: number | undefined): ReadToolParams {
@@ -72,7 +76,81 @@ function buildBaselineInput(path: string, offset: number | undefined, limit: num
 	return input;
 }
 
-export function createReadOverrideTool() {
+function buildReadcacheMeta(
+	pathKey: string,
+	scopeKey: ScopeKey,
+	servedHash: string,
+	mode: ReadCacheMetaV1["mode"],
+	totalLines: number,
+	rangeStart: number,
+	rangeEnd: number,
+	bytes: number,
+	baseHash?: string,
+): ReadCacheMetaV1 {
+	return buildReadCacheMetaV1({
+		pathKey,
+		scopeKey,
+		servedHash,
+		...(baseHash !== undefined ? { baseHash } : {}),
+		mode,
+		totalLines,
+		rangeStart,
+		rangeEnd,
+		bytes,
+	});
+}
+
+function buildUnchangedMarker(scopeKey: ScopeKey, start: number, end: number, totalLines: number, outsideRangeChanged: boolean): string {
+	if (scopeKey === SCOPE_FULL) {
+		return `[readcache: unchanged, ${totalLines} lines]`;
+	}
+	if (outsideRangeChanged) {
+		return `[readcache: unchanged in lines ${start}-${end}; changes exist outside this range]`;
+	}
+	return `[readcache: unchanged in lines ${start}-${end} of ${totalLines}]`;
+}
+
+async function readCurrentTextStrict(absolutePath: string): Promise<CurrentTextState | undefined> {
+	let fileBytes: Buffer;
+	try {
+		fileBytes = await readFile(absolutePath);
+	} catch {
+		return undefined;
+	}
+
+	let text: string;
+	try {
+		text = UTF8_STRICT_DECODER.decode(fileBytes);
+	} catch {
+		return undefined;
+	}
+
+	const totalLines = splitLines(text).length;
+	return {
+		bytes: fileBytes,
+		text,
+		totalLines,
+		currentHash: hashBytes(fileBytes),
+	};
+}
+
+async function persistAndOverlay(
+	runtimeState: ReplayRuntimeState,
+	ctx: ExtensionContext,
+	pathKey: string,
+	scopeKey: ScopeKey,
+	servedHash: string,
+	text: string,
+): Promise<void> {
+	try {
+		await persistObjectIfAbsent(ctx.cwd, servedHash, text);
+	} catch {
+		// Object persistence failures are fail-open.
+	}
+	overlaySet(runtimeState, ctx.sessionManager, pathKey, scopeKey, servedHash);
+}
+
+export function createReadOverrideTool(runtimeState: ReplayRuntimeState = createReplayRuntimeState()) {
 	return {
 		name: "read",
 		label: "read",
@@ -98,15 +176,117 @@ export function createReadOverrideTool() {
 				return baselineResult;
 			}
 
+			const current = await readCurrentTextStrict(parsed.absolutePath);
+			if (!current) {
+				return baselineResult;
+			}
+
+			let start: number;
+			let end: number;
+			let totalLines: number;
 			try {
-				const meta = await buildBaselineMeta(ctx, parsed.absolutePath, parsed.offset, parsed.limit);
-				return {
-					...baselineResult,
-					details: withReadcacheDetails(baselineResult.details, meta),
-				};
+				const normalizedRange = normalizeOffsetLimit(parsed.offset, parsed.limit, current.totalLines);
+				start = normalizedRange.start;
+				end = normalizedRange.end;
+				totalLines = normalizedRange.totalLines;
 			} catch {
 				return baselineResult;
 			}
+
+			const pathKey = parsed.absolutePath;
+			const scopeKey = scopeKeyForRange(start, end, totalLines);
+			const knowledge = buildKnowledgeForLeaf(ctx.sessionManager, runtimeState);
+			const pathKnowledge = knowledge.get(pathKey);
+			const baseHash = pathKnowledge?.get(scopeKey) ?? (scopeKey !== SCOPE_FULL ? pathKnowledge?.get(SCOPE_FULL) : undefined);
+
+			if (!baseHash) {
+				const meta = buildReadcacheMeta(
+					pathKey,
+					scopeKey,
+					current.currentHash,
+					"full",
+					totalLines,
+					start,
+					end,
+					current.bytes.byteLength,
+				);
+				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
+				return attachMetaToBaseline(baselineResult, meta);
+			}
+
+			if (baseHash === current.currentHash) {
+				const mode = scopeKey === SCOPE_FULL ? "unchanged" : "unchanged_range";
+				const meta = buildReadcacheMeta(
+					pathKey,
+					scopeKey,
+					current.currentHash,
+					mode,
+					totalLines,
+					start,
+					end,
+					current.bytes.byteLength,
+					baseHash,
+				);
+				const marker = buildUnchangedMarker(scopeKey, start, end, totalLines, false);
+				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
+				return buildMarkerResult(marker, meta);
+			}
+
+			let baseText: string | undefined;
+			try {
+				baseText = await loadObject(ctx.cwd, baseHash);
+			} catch {
+				baseText = undefined;
+			}
+
+			if (!baseText) {
+				const meta = buildReadcacheMeta(
+					pathKey,
+					scopeKey,
+					current.currentHash,
+					"full_fallback",
+					totalLines,
+					start,
+					end,
+					current.bytes.byteLength,
+					baseHash,
+				);
+				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
+				return attachMetaToBaseline(baselineResult, meta);
+			}
+
+			if (scopeKey !== SCOPE_FULL) {
+				if (compareSlices(baseText, current.text, start, end)) {
+					const meta = buildReadcacheMeta(
+						pathKey,
+						scopeKey,
+						current.currentHash,
+						"unchanged_range",
+						totalLines,
+						start,
+						end,
+						current.bytes.byteLength,
+						baseHash,
+					);
+					const marker = buildUnchangedMarker(scopeKey, start, end, totalLines, true);
+					await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
+					return buildMarkerResult(marker, meta);
+				}
+			}
+
+			const meta = buildReadcacheMeta(
+				pathKey,
+				scopeKey,
+				current.currentHash,
+				"full_fallback",
+				totalLines,
+				start,
+				end,
+				current.bytes.byteLength,
+				baseHash,
+			);
+			await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
+			return attachMetaToBaseline(baselineResult, meta);
 		},
 	};
 }
