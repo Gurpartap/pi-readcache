@@ -10,11 +10,14 @@ Date: 2026-02-15
 - [x] No known correctness gaps in tree/compaction/range behavior.
 - [x] Baseline fallback proven for failure paths.
 - [x] `readcache-refresh` invalidation durable across restart/resume.
+- [x] Strict compaction replay barrier enforced (`latest compaction + 1`, never `firstKeptEntryId`).
+- [x] First post-compaction reads are baseline for full and range scopes.
 
 ## Required check results
 
 - `npm run typecheck` ✅
-- `npm test` ✅ (13 files, 52 tests)
+- `npm test` ✅ (13 files, 62 tests)
+- `npm test -- test/unit/replay.test.ts` ✅
 - `npm test -- test/integration/tree-navigation.test.ts` ✅
 - `npm test -- test/integration/compaction-boundary.test.ts` ✅
 - `npm test -- test/integration/selective-range.test.ts` ✅

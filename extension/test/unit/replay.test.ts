@@ -98,31 +98,33 @@ function createSessionManagerStub(state: {
 }
 
 describe("replay", () => {
-	it("finds replay start from latest compaction and firstKeptEntryId", () => {
+	it("starts replay at latest compaction+1 even when firstKeptEntryId points deeper in history", () => {
 		const path = "/tmp/file.txt";
 		const entries: SessionEntry[] = [
 			createReadEntry("e1", null, createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" })),
 			createReadEntry("e2", "e1", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "b".repeat(64), mode: "full" })),
-			createCompactionEntry("e3", "e2", "e2"),
+			createCompactionEntry("e3", "e2", "e1"),
 			createReadEntry("e4", "e3", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "c".repeat(64), mode: "full" })),
 		];
 
 		const boundary = findReplayStartIndex(entries);
-		expect(boundary.startIndex).toBe(1);
-		expect(boundary.boundaryKey).toBe("kept:e2");
+		expect(boundary.startIndex).toBe(3);
+		expect(boundary.boundaryKey).toBe("compaction:e3");
 	});
 
-	it("falls back to compaction+1 when firstKeptEntryId is missing", () => {
+	it("uses the latest compaction on the active path when multiple compactions exist", () => {
 		const path = "/tmp/file.txt";
 		const entries: SessionEntry[] = [
 			createReadEntry("e1", null, createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" })),
-			createCompactionEntry("e2", "e1", "missing"),
+			createCompactionEntry("e2", "e1", "e1"),
 			createReadEntry("e3", "e2", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "b".repeat(64), mode: "full" })),
+			createCompactionEntry("e4", "e3", "e3"),
+			createReadEntry("e5", "e4", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "c".repeat(64), mode: "full" })),
 		];
 
 		const boundary = findReplayStartIndex(entries);
-		expect(boundary.startIndex).toBe(2);
-		expect(boundary.boundaryKey).toBe("compaction:e2");
+		expect(boundary.startIndex).toBe(4);
+		expect(boundary.boundaryKey).toBe("compaction:e4");
 	});
 
 	it("applies_full_anchor_without_prior_trust", () => {

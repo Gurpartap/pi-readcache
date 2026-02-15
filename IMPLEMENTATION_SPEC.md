@@ -202,12 +202,13 @@ If none:
 - replay from root
 
 If found:
-- preferred start = index of `firstKeptEntryId` referenced by that compaction (if present on path)
-- fallback start = index(compaction) + 1
+- replay start is always `index(latestCompaction) + 1`
+- `firstKeptEntryId` is intentionally ignored for trust replay
 
 Rationale:
-- only states represented in active context are trusted
-- this avoids using pre-compaction state that is no longer in context
+- enforce a strict post-compaction trust barrier on the active branch
+- prevent any pre-compaction trust from establishing post-compaction `unchanged`/`diff`
+- keep trust replay policy explicit and deterministic across compaction layouts
 
 ### 7.2 Trust-state replay model
 
@@ -325,6 +326,12 @@ Constraints:
 
 Replay processes branch entries in order from replay boundary to leaf.
 
+Replay boundary rule (authoritative):
+- let `C` be the latest `compaction` entry on the active root->leaf path
+- if `C` exists, replay starts at `index(C) + 1`
+- if `C` does not exist, replay starts at `0`
+- this barrier is branch-local: navigating to a pre-compaction leaf removes that barrier for that branch view
+
 Event classes:
 1. `ReadMeta` (valid `details.readcache.v===1` from `toolResult(read)`)
 2. `Invalidate` (valid `custom(pi-readcache)` with `kind:"invalidate"`)
@@ -419,7 +426,7 @@ digraph RangeScopeTrust {
 
 #### 7.5.7 Safety consequence
 
-A replay window containing only non-anchor entries (`unchanged`, `unchanged_range`, `diff`) cannot bootstrap trust unless guards validate against already trusted base. Therefore post-compaction false-`unchanged` is prevented.
+A replay window containing only non-anchor entries (`unchanged`, `unchanged_range`, `diff`) cannot bootstrap trust unless guards validate against already trusted base. Combined with the strict compaction barrier (`latest compaction + 1`), the first post-compaction read for any scope is baseline (`full`/`full_fallback`) until a new post-compaction anchor is created.
 
 ---
 
@@ -795,30 +802,30 @@ executeRead(params, ctx, signal): ToolResult {
 ### 21.3 Tree/branch behavior
 11. read on branch A then `/tree` to branch B -> no stale base leakage
 12. `/tree` to pre-compaction point -> replay uses historical state correctly
-13. latest compaction on path -> replay starts at boundary logic
-14. `/fork` then read -> independent branch replay state
-15. session switch/resume -> correct replay with no sidecar dependence
-16. post-compaction non-anchor replay cannot bootstrap trust:
-   - if replay window contains only `unchanged`/`diff` (without valid anchor chain), next read is baseline `full`/`full_fallback`, not `unchanged`
-17. stale range trust does not override fresher full trust (seq freshness selection)
+13. replay boundary uses strict latest-compaction barrier (`start = latest compaction + 1`, never `firstKeptEntryId`)
+14. latest compaction wins when multiple compactions exist on active path
+15. first post-compaction read is baseline (`full`/`full_fallback`) for full and range scopes
+16. `/fork` then read -> independent branch replay state
+17. session switch/resume -> correct replay with no sidecar dependence
+18. stale range trust does not override fresher full trust (seq freshness selection)
 
 ### 21.4 Robustness
-18. missing base object hash -> fallback full, no crash
-19. object write collision under concurrency -> no corruption
-20. metadata missing/invalid in old entries -> ignored safely
-21. signal abort during diff -> clean abort
-22. image/binary reads delegated to baseline
+19. missing base object hash -> fallback full, no crash
+20. object write collision under concurrency -> no corruption
+21. metadata missing/invalid in old entries -> ignored safely
+22. signal abort during diff -> clean abort
+23. image/binary reads delegated to baseline
 
 ### 21.5 Compatibility
-23. UI truncation indicators still work
-24. output shape accepted by built-in renderer
-25. no requirement to change system prompt/tool instructions
+24. UI truncation indicators still work
+25. output shape accepted by built-in renderer
+26. no requirement to change system prompt/tool instructions
 
 ### 21.6 Refresh/invalidation behavior
-26. `/readcache-refresh` appends `custom` invalidation entry and next read is baseline full/slice
-27. `readcache_refresh` tool (if enabled) has same semantics as command
-28. after restart/resume, invalidation still applies on branch replay
-29. invalidating `full` scope also invalidates all range scopes for that path
+27. `/readcache-refresh` appends `custom` invalidation entry and next read is baseline full/slice
+28. `readcache_refresh` tool (if enabled) has same semantics as command
+29. after restart/resume, invalidation still applies on branch replay
+30. invalidating `full` scope also invalidates all range scopes for that path
 
 ---
 

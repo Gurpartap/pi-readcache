@@ -254,9 +254,9 @@ Replay boundary algorithm:
 1. get branch root->leaf
 2. find latest compaction on path
 3. start at:
-   - index(firstKeptEntryId) if present
-   - else compaction index + 1
-   - else 0
+   - `index(latestCompaction) + 1` when compaction exists
+   - else `0`
+   - never use `firstKeptEntryId` for trust replay
 4. replay read metadata and invalidations from start->leaf with monotonic `seq`
 
 Guarded transitions (must match spec exactly):
@@ -404,7 +404,7 @@ Acceptance:
 7. Full scope base present, range scope absent.
 8. Invalid metadata in old session entries.
 9. Missing object blob for base hash.
-10. Compaction boundary where `firstKeptEntryId` missing from path.
+10. Compaction boundary always starts at latest active `compaction + 1` (independent of `firstKeptEntryId`).
 11. Leaf reset (`null`) behavior when user rewinds to before first entry.
 12. Concurrent writes of same hash object from multiple sessions.
 13. Abort signal during read/diff.
@@ -469,10 +469,15 @@ Acceptance:
   - read on branch A, /tree branch B, read correctness
 
 - `compaction-boundary.test.ts`
-  - pre/post compaction replay boundary correctness
-  - regression: compaction window containing only non-anchor readcache entries must not yield `unchanged`
+  - first read after active compaction is baseline (`full`/`full_fallback`)
+  - latest compaction wins when multiple compactions exist on active path
+  - first post-compaction range read is baseline range (`full`/`full_fallback`)
+  - `/tree` navigation to pre-compaction node restores pre-compaction replay visibility
   - regression IDs:
-    - `does_not_bootstrap_trust_from_non_anchor_unchanged_entries_after_compaction`
+    - `first_read_after_compaction_is_baseline_even_if_precompaction_anchor_exists`
+    - `latest_compaction_wins_when_multiple_compactions_exist`
+    - `post_compaction_first_range_read_is_baseline_range`
+    - `tree_navigation_pre_compaction_restores_precompaction_visibility`
     - `prefers_fresher_full_trust_over_older_exact_range_trust_when_selecting_baseHash`
 
 - `refresh-invalidation.test.ts`
@@ -572,7 +577,7 @@ All items required:
 - [x] No known correctness gaps in tree/compaction/range behavior.
 - [x] Baseline fallback proven for all failure paths.
 - [x] `readcache-refresh` invalidation durable across restart/resume.
-- [x] Regression test passes: post-compaction replay with only non-anchor entries does not return `unchanged`.
+- [x] Regression tests pass: replay boundary is strict latest-compaction `+1` and first post-compaction reads are baseline for full/range scopes.
 - [x] Trust-state-machine guards and freshness (`seq`) selection are verified by tests.
 - [x] `IMPLEMENTATION_SPEC.md` and `IMPLEMENTATION_PLAN.md` are in sync with shipped behavior.
 
@@ -585,8 +590,10 @@ If any box is unchecked, do not call implementation complete.
 Use this checklist when migrating an existing implementation that still replays read metadata unconditionally.
 
 1. Add failing regression tests first:
-   - compaction + non-anchor replay should not produce `unchanged`
-     - `test/integration/compaction-boundary.test.ts :: does_not_bootstrap_trust_from_non_anchor_unchanged_entries_after_compaction`
+   - strict compaction barrier (`latest compaction + 1`) with baseline-first post-compaction reads
+     - `test/integration/compaction-boundary.test.ts :: first_read_after_compaction_is_baseline_even_if_precompaction_anchor_exists`
+     - `test/integration/compaction-boundary.test.ts :: latest_compaction_wins_when_multiple_compactions_exist`
+     - `test/integration/compaction-boundary.test.ts :: post_compaction_first_range_read_is_baseline_range`
    - derived modes without trusted base are ignored
      - `test/unit/replay.test.ts :: ignores_unchanged_without_full_anchor`
      - `test/unit/replay.test.ts :: ignores_diff_without_matching_full_anchor`

@@ -9,6 +9,7 @@ This log executes the `IMPLEMENTATION_PLAN.md` manual checklist with reproducibl
 ```bash
 cd /Users/gurpartap/Projects/github.com/Gurpartap/pi-readcache/extension
 npm run typecheck
+npm test -- test/unit/replay.test.ts
 npm test
 npm test -- test/integration/tree-navigation.test.ts
 npm test -- test/integration/compaction-boundary.test.ts
@@ -30,7 +31,7 @@ All commands passed.
 | 5) Edit inside requested range -> fallback slice | `test/integration/selective-range.test.ts` (`full_fallback` for changed ranges and shifted ranges) | ✅ PASS |
 | 6) Full-file changes -> diff path | `test/unit/tool.test.ts` (`emits full-scope diff output...`) | ✅ PASS |
 | 7) `/tree` branch switch has no stale base leakage | `test/integration/tree-navigation.test.ts` (`does not leak stale base hashes...`) | ✅ PASS |
-| 8) Compaction boundary handling is context-safe | `test/integration/compaction-boundary.test.ts` (all 3 cases) | ✅ PASS |
+| 8) Compaction boundary handling is context-safe | `test/integration/compaction-boundary.test.ts` (strict barrier + multi-compaction + range + tree cases) | ✅ PASS |
 | 9) `/readcache-refresh` forces next baseline read | `test/integration/refresh-invalidation.test.ts` (`/readcache-refresh appends...`) | ✅ PASS |
 | 10) Restart/resume preserves replay behavior | `test/integration/restart-resume.test.ts` (persistent invalidation replay after reopen) | ✅ PASS |
 

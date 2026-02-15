@@ -116,17 +116,8 @@ export function findReplayStartIndex(branchEntries: SessionEntry[]): ReplayBound
 			continue;
 		}
 
-		const firstKeptIndex = branchEntries.findIndex((candidate) => candidate.id === entry.firstKeptEntryId);
-		if (firstKeptIndex >= 0) {
-			return {
-				startIndex: firstKeptIndex,
-				boundaryKey: `kept:${entry.firstKeptEntryId}`,
-			};
-		}
-
-		const fallbackStart = Math.min(index + 1, branchEntries.length);
 		return {
-			startIndex: fallbackStart,
+			startIndex: Math.min(index + 1, branchEntries.length),
 			boundaryKey: `compaction:${entry.id}`,
 		};
 	}
