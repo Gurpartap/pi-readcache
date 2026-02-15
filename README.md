@@ -31,7 +31,13 @@ Plus:
 
 ## Install
 
-Use pi package install:
+Preferred (npm):
+
+```bash
+pi install npm:pi-readcache
+```
+
+Alternative (git):
 
 ```bash
 pi install git:https://github.com/Gurpartap/pi-readcache
