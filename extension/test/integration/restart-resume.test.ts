@@ -62,6 +62,14 @@ function createExtensionHarness(sessionManager: SessionManager): {
 	return { pi, tools };
 }
 
+function appendAssistantSeed(sessionManager: SessionManager, text: string): void {
+	sessionManager.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	});
+}
+
 describe("integration: restart and resume", () => {
 	it("rebuilds invalidation semantics from branch replay after restart", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-resume-cwd-"));
@@ -69,6 +77,7 @@ describe("integration: restart and resume", () => {
 		await writeFile(join(cwd, "sample.txt"), "alpha\nbeta\ngamma", "utf-8");
 
 		const sessionManager = SessionManager.create(cwd, sessionDir);
+		appendAssistantSeed(sessionManager, "seed assistant turn for persistence");
 		const runtimeState = createReplayRuntimeState();
 		const readTool = createReadOverrideTool(runtimeState);
 		const harness = createExtensionHarness(sessionManager);
@@ -117,5 +126,31 @@ describe("integration: restart and resume", () => {
 			resumedCtx,
 		);
 		expect(resumedUnchanged.details?.readcache?.mode).toBe("unchanged");
+	});
+
+	it("keeps replay knowledge isolated when switching between sessions", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-switch-cwd-"));
+		const sessionDirA = await mkdtemp(join(tmpdir(), "pi-readcache-switch-a-"));
+		const sessionDirB = await mkdtemp(join(tmpdir(), "pi-readcache-switch-b-"));
+		const filePath = join(cwd, "sample.txt");
+		await writeFile(filePath, "shared", "utf-8");
+
+		const runtimeState = createReplayRuntimeState();
+		const readTool = createReadOverrideTool(runtimeState);
+
+		const sessionA = SessionManager.create(cwd, sessionDirA);
+		const sessionB = SessionManager.create(cwd, sessionDirB);
+		const ctxA = asContext(cwd, sessionA);
+		const ctxB = asContext(cwd, sessionB);
+
+		const aFirst = await readTool.execute("switch-a-1", { path: "sample.txt" }, undefined, undefined, ctxA);
+		expect(aFirst.details?.readcache?.mode).toBe("full");
+		appendReadResult(sessionA, "switch-a-1", aFirst);
+
+		const aSecond = await readTool.execute("switch-a-2", { path: "sample.txt" }, undefined, undefined, ctxA);
+		expect(aSecond.details?.readcache?.mode).toBe("unchanged");
+
+		const bFirst = await readTool.execute("switch-b-1", { path: "sample.txt" }, undefined, undefined, ctxB);
+		expect(bFirst.details?.readcache?.mode).toBe("full");
 	});
 });

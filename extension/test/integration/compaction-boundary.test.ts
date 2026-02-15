@@ -90,4 +90,37 @@ describe("integration: compaction replay boundary", () => {
 		expect(postCompactionRead.details?.readcache?.mode).toBe("full");
 		expect(getText(postCompactionRead)).toContain("stable");
 	});
+
+	it("replays historical state correctly when tree-navigating to a pre-compaction point", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-compact-"));
+		const filePath = join(cwd, "sample.txt");
+		await writeFile(filePath, "v1", "utf-8");
+
+		const sessionManager = SessionManager.inMemory(cwd);
+		const tool = createReadOverrideTool(createReplayRuntimeState());
+		const ctx = asContext(cwd, sessionManager);
+
+		const readV1 = await tool.execute("call-pre-1", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(readV1.details?.readcache?.mode).toBe("full");
+		const v1EntryId = appendReadResult(sessionManager, "call-pre-1", readV1);
+
+		await writeFile(filePath, "v2", "utf-8");
+		const readV2 = await tool.execute("call-pre-2", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(readV2.details?.readcache?.mode).toBe("full_fallback");
+		const v2EntryId = appendReadResult(sessionManager, "call-pre-2", readV2);
+
+		sessionManager.appendCompaction("compact", v2EntryId, 64);
+
+		await writeFile(filePath, "v3", "utf-8");
+		const readV3 = await tool.execute("call-pre-3", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(readV3.details?.readcache?.mode).toBe("full_fallback");
+		appendReadResult(sessionManager, "call-pre-3", readV3);
+
+		sessionManager.branch(v1EntryId);
+		await writeFile(filePath, "v1", "utf-8");
+
+		const rewoundRead = await tool.execute("call-pre-4", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(rewoundRead.details?.readcache?.mode).toBe("unchanged");
+		expect(getText(rewoundRead)).toContain("[readcache: unchanged");
+	});
 });

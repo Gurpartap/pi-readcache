@@ -43,6 +43,14 @@ function getText(result: AgentToolResult<ReadToolDetails | undefined>): string {
 	return block.text;
 }
 
+function appendAssistantSeed(sessionManager: SessionManager, text: string): void {
+	sessionManager.appendMessage({
+		role: "assistant",
+		content: [{ type: "text", text }],
+		timestamp: Date.now(),
+	});
+}
+
 describe("integration: tree navigation", () => {
 	it("does not leak stale base hashes across branch navigation", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tree-"));
@@ -67,5 +75,45 @@ describe("integration: tree navigation", () => {
 		const thirdRead = await tool.execute("call-3", { path: "sample.txt" }, undefined, undefined, ctx);
 		expect(thirdRead.details?.readcache?.mode).toBe("full_fallback");
 		expect(getText(thirdRead)).toContain("BETA");
+	});
+
+	it("keeps forked sessions isolated from source-session replay updates", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tree-fork-cwd-"));
+		const sourceSessionDir = await mkdtemp(join(tmpdir(), "pi-readcache-tree-fork-source-"));
+		const forkSessionDir = await mkdtemp(join(tmpdir(), "pi-readcache-tree-fork-target-"));
+		const filePath = join(cwd, "sample.txt");
+		await writeFile(filePath, "v1", "utf-8");
+
+		const runtimeState = createReplayRuntimeState();
+		const tool = createReadOverrideTool(runtimeState);
+
+		const sourceSession = SessionManager.create(cwd, sourceSessionDir);
+		appendAssistantSeed(sourceSession, "seed assistant turn for persistence");
+		const sourceCtx = asContext(cwd, sourceSession);
+		const sourceFirst = await tool.execute("source-1", { path: "sample.txt" }, undefined, undefined, sourceCtx);
+		expect(sourceFirst.details?.readcache?.mode).toBe("full");
+		appendReadResult(sourceSession, "source-1", sourceFirst);
+
+		const sourceSessionFile = sourceSession.getSessionFile();
+		expect(sourceSessionFile).toBeDefined();
+		if (!sourceSessionFile) {
+			throw new Error("expected source session file");
+		}
+
+		const forkedSession = SessionManager.forkFrom(sourceSessionFile, cwd, forkSessionDir);
+		const forkedCtx = asContext(cwd, forkedSession);
+
+		await writeFile(filePath, "v2", "utf-8");
+		const sourceSecond = await tool.execute("source-2", { path: "sample.txt" }, undefined, undefined, sourceCtx);
+		expect(sourceSecond.details?.readcache?.mode).toBe("full_fallback");
+		appendReadResult(sourceSession, "source-2", sourceSecond);
+
+		await writeFile(filePath, "v1", "utf-8");
+		const sourceThird = await tool.execute("source-3", { path: "sample.txt" }, undefined, undefined, sourceCtx);
+		expect(sourceThird.details?.readcache?.mode).not.toBe("unchanged");
+
+		const forkedRead = await tool.execute("fork-1", { path: "sample.txt" }, undefined, undefined, forkedCtx);
+		expect(forkedRead.details?.readcache?.mode).toBe("unchanged");
+		expect(getText(forkedRead)).toContain("[readcache: unchanged");
 	});
 });
