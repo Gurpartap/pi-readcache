@@ -47,6 +47,24 @@ function appendAssistantSeed(sessionManager: SessionManager, text: string): void
 	sessionManager.appendMessage({
 		role: "assistant",
 		content: [{ type: "text", text }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "seed-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "stop",
 		timestamp: Date.now(),
 	});
 }

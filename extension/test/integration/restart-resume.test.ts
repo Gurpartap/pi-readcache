@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -66,6 +66,24 @@ function appendAssistantSeed(sessionManager: SessionManager, text: string): void
 	sessionManager.appendMessage({
 		role: "assistant",
 		content: [{ type: "text", text }],
+		api: "openai-responses",
+		provider: "openai",
+		model: "seed-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "stop",
 		timestamp: Date.now(),
 	});
 }
@@ -108,6 +126,10 @@ describe("integration: restart and resume", () => {
 		if (!sessionFile) {
 			throw new Error("expected persisted session file");
 		}
+
+		const persistedSessionJsonl = await readFile(sessionFile, "utf-8");
+		expect(persistedSessionJsonl).toContain('"toolName":"read"');
+		expect(persistedSessionJsonl).toContain('"customType":"pi-readcache"');
 
 		const resumedSessionManager = SessionManager.open(sessionFile, sessionDir);
 		const resumedRuntimeState = createReplayRuntimeState();
