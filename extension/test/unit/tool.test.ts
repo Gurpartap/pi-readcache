@@ -1,9 +1,26 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager, type ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { SessionManager, type AgentToolResult, type ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { createReadOverrideTool } from "../../src/tool.js";
+import type { ReadToolDetailsExt } from "../../src/types.js";
+
+function appendReadResult(
+	sessionManager: SessionManager,
+	toolCallId: string,
+	result: AgentToolResult<ReadToolDetailsExt | undefined>,
+): void {
+	sessionManager.appendMessage({
+		role: "toolResult",
+		toolCallId,
+		toolName: "read",
+		content: result.content,
+		details: result.details,
+		isError: false,
+		timestamp: Date.now(),
+	});
+}
 
 describe("tool", () => {
 	it("delegates to baseline read and attaches readcache metadata", async () => {
@@ -39,5 +56,34 @@ describe("tool", () => {
 		expect(result.details?.readcache?.scopeKey).toBe("r:2:4");
 		expect(result.details?.readcache?.rangeStart).toBe(2);
 		expect(result.details?.readcache?.rangeEnd).toBe(4);
+	});
+
+	it("emits full-scope diff output when changed content has a useful patch", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
+		const filePath = join(cwd, "sample.txt");
+		const lines = Array.from({ length: 300 }, (_, index) => `line ${index + 1} :: original text payload`);
+		await writeFile(filePath, lines.join("\n"), "utf-8");
+
+		const tool = createReadOverrideTool();
+		const sessionManager = SessionManager.inMemory(cwd);
+		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
+
+		const firstRead = await tool.execute("call-3", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(firstRead.details?.readcache?.mode).toBe("full");
+		appendReadResult(sessionManager, "call-3", firstRead);
+
+		const changed = [...lines];
+		changed[199] = "line 200 :: changed text payload";
+		await writeFile(filePath, changed.join("\n"), "utf-8");
+
+		const secondRead = await tool.execute("call-4", { path: "sample.txt" }, undefined, undefined, ctx);
+		const diffText = secondRead.content[0] && secondRead.content[0].type === "text" ? secondRead.content[0].text : "";
+
+		expect(secondRead.details?.readcache?.mode).toBe("diff");
+		expect(diffText).toContain("[readcache: 1 lines changed of 300]");
+		expect(diffText).toContain("--- a/sample.txt");
+		expect(diffText).toContain("+++ b/sample.txt");
+		expect(diffText).toContain("-line 200 :: original text payload");
+		expect(diffText).toContain("+line 200 :: changed text payload");
 	});
 });

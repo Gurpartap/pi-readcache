@@ -6,14 +6,16 @@ import {
 	type AgentToolResult,
 	type ExtensionContext,
 	type ReadToolDetails,
+	type TruncationResult,
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
-import { SCOPE_FULL } from "./constants.js";
+import { MAX_DIFF_FILE_BYTES, SCOPE_FULL } from "./constants.js";
+import { computeUnifiedDiff, isDiffUseful } from "./diff.js";
 import { buildReadCacheMetaV1 } from "./meta.js";
 import { hashBytes, loadObject, persistObjectIfAbsent } from "./object-store.js";
 import { normalizeOffsetLimit, parseTrailingRangeIfNeeded, scopeKeyForRange } from "./path.js";
 import { buildKnowledgeForLeaf, createReplayRuntimeState, overlaySet, type ReplayRuntimeState } from "./replay.js";
-import { compareSlices, splitLines } from "./text.js";
+import { compareSlices, splitLines, truncateForReadcache } from "./text.js";
 import type { ReadCacheMetaV1, ReadToolDetailsExt, ScopeKey } from "./types.js";
 
 const UTF8_STRICT_DECODER = new TextDecoder("utf-8", { fatal: true });
@@ -58,11 +60,19 @@ function attachMetaToBaseline(
 	};
 }
 
-function buildMarkerResult(marker: string, meta: ReadCacheMetaV1): AgentToolResult<ReadToolDetailsExt | undefined> {
+function buildTextResult(
+	text: string,
+	meta: ReadCacheMetaV1,
+	truncation?: TruncationResult,
+): AgentToolResult<ReadToolDetailsExt | undefined> {
 	return {
-		content: [{ type: "text", text: marker }],
-		details: withReadcacheDetails(undefined, meta),
+		content: [{ type: "text", text }],
+		details: withReadcacheDetails(truncation ? { truncation } : undefined, meta),
 	};
+}
+
+function buildMarkerResult(marker: string, meta: ReadCacheMetaV1): AgentToolResult<ReadToolDetailsExt | undefined> {
+	return buildTextResult(marker, meta);
 }
 
 function buildBaselineInput(path: string, offset: number | undefined, limit: number | undefined): ReadToolParams {
@@ -108,6 +118,10 @@ function buildUnchangedMarker(scopeKey: ScopeKey, start: number, end: number, to
 		return `[readcache: unchanged in lines ${start}-${end}; changes exist outside this range]`;
 	}
 	return `[readcache: unchanged in lines ${start}-${end} of ${totalLines}]`;
+}
+
+function buildDiffPayload(changedLines: number, totalLines: number, diffText: string): string {
+	return `[readcache: ${changedLines} lines changed of ${totalLines}]\n${diffText}`;
 }
 
 async function readCurrentTextStrict(absolutePath: string): Promise<CurrentTextState | undefined> {
@@ -239,7 +253,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				baseText = undefined;
 			}
 
-			if (!baseText) {
+			const fallbackResult = async (): Promise<AgentToolResult<ReadToolDetailsExt | undefined>> => {
 				const meta = buildReadcacheMeta(
 					pathKey,
 					scopeKey,
@@ -253,6 +267,10 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				);
 				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
 				return attachMetaToBaseline(baselineResult, meta);
+			};
+
+			if (!baseText) {
+				return fallbackResult();
 			}
 
 			if (scopeKey !== SCOPE_FULL) {
@@ -272,13 +290,33 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 					await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
 					return buildMarkerResult(marker, meta);
 				}
+				return fallbackResult();
+			}
+
+			if (current.bytes.byteLength > MAX_DIFF_FILE_BYTES) {
+				return fallbackResult();
+			}
+
+			if (signal?.aborted) {
+				throw new Error("Operation aborted");
+			}
+
+			const diff = computeUnifiedDiff(baseText, current.text, parsed.pathInput);
+			if (!diff || !isDiffUseful(diff.diffText, baseText, current.text)) {
+				return fallbackResult();
+			}
+
+			const diffPayload = buildDiffPayload(diff.changedLines, totalLines, diff.diffText);
+			const truncation = truncateForReadcache(diffPayload);
+			if (truncation.truncated) {
+				return fallbackResult();
 			}
 
 			const meta = buildReadcacheMeta(
 				pathKey,
 				scopeKey,
 				current.currentHash,
-				"full_fallback",
+				"diff",
 				totalLines,
 				start,
 				end,
@@ -286,7 +324,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				baseHash,
 			);
 			await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
-			return attachMetaToBaseline(baselineResult, meta);
+			return buildTextResult(truncation.content, meta, truncation.truncated ? truncation : undefined);
 		},
 	};
 }
