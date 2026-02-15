@@ -1,5 +1,6 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { createReadOverrideTool } from "./src/tool.js";
 
-export default function (_pi: ExtensionAPI): void {
-	// Wired in follow-up bundles.
+export default function (pi: ExtensionAPI): void {
+	pi.registerTool(createReadOverrideTool());
 }
