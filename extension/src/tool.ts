@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import {
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -9,7 +10,12 @@ import {
 	type TruncationResult,
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
-import { MAX_DIFF_FILE_BYTES, SCOPE_FULL } from "./constants.js";
+import {
+	DEFAULT_EXCLUDED_PATH_PATTERNS,
+	MAX_DIFF_FILE_BYTES,
+	MAX_DIFF_FILE_LINES,
+	SCOPE_FULL,
+} from "./constants.js";
 import { computeUnifiedDiff, isDiffUseful } from "./diff.js";
 import { buildReadCacheMetaV1 } from "./meta.js";
 import { hashBytes, loadObject, persistObjectIfAbsent } from "./object-store.js";
@@ -41,6 +47,25 @@ function buildReadDescription(): string {
 
 function hasImageContent(result: AgentToolResult<ReadToolDetails | undefined>): boolean {
 	return result.content.some((block) => block.type === "image");
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) {
+		throw new Error("Operation aborted");
+	}
+}
+
+function isExcludedPath(pathKey: string): boolean {
+	const baseName = basename(pathKey).toLowerCase();
+	return DEFAULT_EXCLUDED_PATH_PATTERNS.some((pattern) => {
+		if (pattern === ".env*") {
+			return baseName.startsWith(".env");
+		}
+		if (pattern.startsWith("*")) {
+			return baseName.endsWith(pattern.slice(1));
+		}
+		return baseName === pattern;
+	});
 }
 
 function withReadcacheDetails(details: ReadToolDetails | undefined, readcache: ReadCacheMetaV1): ReadToolDetailsExt {
@@ -181,6 +206,8 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				throw new Error("read override requires extension context");
 			}
 
+			throwIfAborted(signal);
+
 			const parsed = parseTrailingRangeIfNeeded(params.path, params.offset, params.limit, ctx.cwd);
 			const baseline = createReadTool(ctx.cwd);
 			const baselineInput = buildBaselineInput(parsed.pathInput, parsed.offset, parsed.limit);
@@ -190,6 +217,11 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				return baselineResult;
 			}
 
+			if (isExcludedPath(parsed.absolutePath)) {
+				return baselineResult;
+			}
+
+			throwIfAborted(signal);
 			const current = await readCurrentTextStrict(parsed.absolutePath);
 			if (!current) {
 				return baselineResult;
@@ -207,6 +239,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				return baselineResult;
 			}
 
+			throwIfAborted(signal);
 			const pathKey = parsed.absolutePath;
 			const scopeKey = scopeKeyForRange(start, end, totalLines);
 			const knowledge = buildKnowledgeForLeaf(ctx.sessionManager, runtimeState);
@@ -254,6 +287,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 			}
 
 			const fallbackResult = async (): Promise<AgentToolResult<ReadToolDetailsExt | undefined>> => {
+				throwIfAborted(signal);
 				const meta = buildReadcacheMeta(
 					pathKey,
 					scopeKey,
@@ -293,14 +327,18 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				return fallbackResult();
 			}
 
-			if (current.bytes.byteLength > MAX_DIFF_FILE_BYTES) {
+			const baseBytes = Buffer.byteLength(baseText, "utf-8");
+			const largestBytes = Math.max(baseBytes, current.bytes.byteLength);
+			if (largestBytes > MAX_DIFF_FILE_BYTES) {
 				return fallbackResult();
 			}
 
-			if (signal?.aborted) {
-				throw new Error("Operation aborted");
+			const maxLines = Math.max(splitLines(baseText).length, totalLines);
+			if (maxLines > MAX_DIFF_FILE_LINES) {
+				return fallbackResult();
 			}
 
+			throwIfAborted(signal);
 			const diff = computeUnifiedDiff(baseText, current.text, parsed.pathInput);
 			if (!diff || !isDiffUseful(diff.diffText, baseText, current.text)) {
 				return fallbackResult();
@@ -312,6 +350,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				return fallbackResult();
 			}
 
+			throwIfAborted(signal);
 			const meta = buildReadcacheMeta(
 				pathKey,
 				scopeKey,

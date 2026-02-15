@@ -7,6 +7,8 @@ export const MAX_DIFF_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_DIFF_FILE_LINES = 12_000;
 export const MAX_DIFF_TO_BASE_RATIO = 1.0;
 
+export const DEFAULT_EXCLUDED_PATH_PATTERNS = [".env*", "*.pem", "*.key", "*.p12"] as const;
+
 export const READCACHE_ROOT_DIR = ".pi/readcache";
 export const READCACHE_OBJECTS_DIR = `${READCACHE_ROOT_DIR}/objects`;
 export const READCACHE_TMP_DIR = `${READCACHE_ROOT_DIR}/tmp`;

@@ -86,4 +86,46 @@ describe("tool", () => {
 		expect(diffText).toContain("-line 200 :: original text payload");
 		expect(diffText).toContain("+line 200 :: changed text payload");
 	});
+
+	it("falls back to baseline diff mode for oversized full-file changes", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
+		const filePath = join(cwd, "sample.txt");
+		const large = `${"a".repeat(2 * 1024 * 1024 + 64)}\n`;
+		await writeFile(filePath, large, "utf-8");
+
+		const tool = createReadOverrideTool();
+		const sessionManager = SessionManager.inMemory(cwd);
+		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
+
+		const firstRead = await tool.execute("call-5", { path: "sample.txt" }, undefined, undefined, ctx);
+		appendReadResult(sessionManager, "call-5", firstRead);
+
+		await writeFile(filePath, `b${large.slice(1)}`, "utf-8");
+		const secondRead = await tool.execute("call-6", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(secondRead.details?.readcache?.mode).toBe("full_fallback");
+	});
+
+	it("bypasses readcache metadata for excluded sensitive paths", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
+		await writeFile(join(cwd, ".env.local"), "SECRET_TOKEN=123", "utf-8");
+
+		const tool = createReadOverrideTool();
+		const sessionManager = SessionManager.inMemory(cwd);
+		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
+		const result = await tool.execute("call-7", { path: ".env.local" }, undefined, undefined, ctx);
+
+		expect(result.details?.readcache).toBeUndefined();
+	});
+
+	it("falls back to baseline for non-UTF8 file payloads", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
+		await writeFile(join(cwd, "binary.bin"), Buffer.from([0xff, 0xfe, 0x00, 0xf8]));
+
+		const tool = createReadOverrideTool();
+		const sessionManager = SessionManager.inMemory(cwd);
+		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
+		const result = await tool.execute("call-8", { path: "binary.bin" }, undefined, undefined, ctx);
+
+		expect(result.details?.readcache).toBeUndefined();
+	});
 });
