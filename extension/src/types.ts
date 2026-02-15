@@ -1,0 +1,68 @@
+import type { SessionEntry } from "@mariozechner/pi-coding-agent";
+import type { ReadToolDetails } from "@mariozechner/pi-coding-agent";
+import type { SCOPE_FULL } from "./constants.js";
+
+export type ScopeRangeKey = `r:${number}:${number}`;
+export type ScopeKey = typeof SCOPE_FULL | ScopeRangeKey;
+
+export type ReadCacheMode = "full" | "unchanged" | "unchanged_range" | "diff" | "full_fallback";
+
+export interface ReadCacheMetaV1 {
+	v: 1;
+	pathKey: string;
+	scopeKey: ScopeKey;
+	servedHash: string;
+	baseHash?: string;
+	mode: ReadCacheMode;
+	totalLines: number;
+	rangeStart: number;
+	rangeEnd: number;
+	bytes: number;
+}
+
+export interface ReadCacheInvalidationV1 {
+	v: 1;
+	kind: "invalidate";
+	pathKey: string;
+	scopeKey: ScopeKey;
+	at: number;
+}
+
+export interface ReadKnowledgeEvent {
+	kind: "read";
+	pathKey: string;
+	scopeKey: ScopeKey;
+	servedHash: string;
+}
+
+export interface ReadInvalidationEvent {
+	kind: "invalidate";
+	pathKey: string;
+	scopeKey: ScopeKey;
+}
+
+export type ReplayEvent = ReadKnowledgeEvent | ReadInvalidationEvent;
+
+export type KnowledgeMap = Map<string, Map<ScopeKey, string>>;
+
+export interface NormalizedReadRequest {
+	inputPath: string;
+	absolutePath: string;
+	pathKey: string;
+	offset?: number;
+	limit?: number;
+	start: number;
+	end: number;
+	totalLines: number;
+	scopeKey: ScopeKey;
+}
+
+export interface ReadToolDetailsExt extends ReadToolDetails {
+	readcache?: ReadCacheMetaV1;
+}
+
+export interface ExtractedReplayData {
+	entry: SessionEntry;
+	read?: ReadCacheMetaV1;
+	invalidation?: ReadCacheInvalidationV1;
+}
