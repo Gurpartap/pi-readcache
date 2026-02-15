@@ -1,4 +1,7 @@
-# pi-readcache
+# 🧠 pi-readcache
+
+[![pi coding agent](https://img.shields.io/badge/pi-coding%20agent-6f6bff?logo=terminal&logoColor=white)](https://pi.dev/)
+[![license](https://img.shields.io/npm/l/pi-mermaid.svg)](LICENSE)
 
 A pi extension that overrides the built-in `read` tool with hash-based, replay-aware caching.
 
