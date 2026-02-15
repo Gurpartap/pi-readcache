@@ -74,7 +74,7 @@ This store is **supporting data** for diffing. It is not canonical context truth
 
 ### 3.3 Optional performance cache
 
-In-memory memoization keyed by `(sessionId, leafId)` + in-flight overlay.
+In-memory memoization keyed by `(sessionId, leafId, compactionBoundaryId)` + in-flight overlay.
 
 Performance cache is disposable. Never trust it as source of truth.
 
@@ -108,6 +108,12 @@ Rules:
 - Keep metadata tiny and deterministic.
 - Do not store large payloads in metadata.
 - Do not rely on any metadata except `details.readcache.v === 1` with valid fields.
+- Validation requirements by mode:
+  - `mode in {"full", "full_fallback"}`: `baseHash` is optional.
+  - `mode in {"unchanged", "unchanged_range", "diff"}`: `baseHash` is required and must be non-empty.
+- Metadata parsing must be fail-open for replay:
+  - invalid metadata is ignored (never throws),
+  - ignored metadata must not create trust.
 
 Persistent invalidation entry schema (for explicit refresh):
 
@@ -203,43 +209,227 @@ Rationale:
 - only states represented in active context are trusted
 - this avoids using pre-compaction state that is no longer in context
 
-### 7.2 Replay rule
+### 7.2 Trust-state replay model
 
-For each entry in replay window, process in timestamp/path order:
+Replay produces a **trust map**, not a raw hash map. Trust is only established/advanced by valid transitions.
 
-1. Read tool results:
-- if entry type `message`
-- and `message.role === "toolResult"`
-- and `message.toolName === "read"`
-- and `message.details.readcache.v === 1`
+Per path, maintain trust entries with sequence freshness:
 
-Then set:
-- `knowledge[pathKey][scopeKey] = servedHash`
+```ts
+interface ScopeTrust {
+  hash: string;
+  seq: number; // replay sequence index, monotonic within replay window
+}
 
-2. Explicit invalidations:
-- if entry type `custom`
-- and `customType === "pi-readcache"`
-- and `data.v === 1`
-- and `data.kind === "invalidate"`
+type KnowledgeMap = Map<pathKey, Map<scopeKey, ScopeTrust>>;
+```
 
-Then remove matching scope knowledge:
-- delete `knowledge[pathKey][scopeKey]`
-- if `scopeKey === "full"`, also delete all range scopes for `pathKey`
+`seq` is used to resolve freshness when multiple candidate bases exist (for range reads).
 
-Later entries overwrite earlier ones naturally.
+Representation note:
+- The canonical conceptual model is defined in Section 7.5 (`PathTrustState` with `full` + `ranges`).
+- A flattened runtime map (`KnowledgeMap`) is allowed as long as it is semantically equivalent to the Section 7.5 state machine.
 
-### 7.3 In-flight overlay
+### 7.3 Replay transition rules (authoritative)
+
+Process replay window entries in order (`seq` increments per encountered valid `ReadMeta` event). Invalidation events mutate trust but do not require their own sequence increments.
+
+Mode classes:
+- **Anchor modes**: `full`, `full_fallback` (can establish trust from empty state)
+- **Derived modes**: `unchanged`, `diff`, `unchanged_range` (must validate base-chain trust first)
+
+#### A) Read tool results (`message -> toolResult(read)` with valid `details.readcache`)
+
+Let:
+- `M = mode`
+- `S = scopeKey`
+- `H = servedHash`
+- `B = baseHash`
+- `Tfull = trust(pathKey, "full")`
+- `Trange = trust(pathKey, S)` when `S` is a range scope
+
+Transitions:
+
+1. Anchor modes (establish trust)
+- If `M in {"full", "full_fallback"}`:
+  - set `trust(pathKey, S) = { hash: H, seq }`
+
+2. Full unchanged (derived, guarded)
+- If `M == "unchanged"` and `S == "full"`:
+  - apply only if `B` exists, `Tfull` exists, `Tfull.hash == B`, and `H == B`
+  - then set `trust(pathKey, "full") = { hash: H, seq }`
+  - else ignore
+
+3. Full diff (derived, guarded)
+- If `M == "diff"` and `S == "full"`:
+  - apply only if `B` exists, `Tfull` exists, and `Tfull.hash == B`
+  - then set `trust(pathKey, "full") = { hash: H, seq }`
+  - else ignore
+
+4. Range unchanged (derived, guarded)
+- If `M == "unchanged_range"` and `S` is range:
+  - apply only if `B` exists and one of:
+    - `Trange` exists and `Trange.hash == B`, or
+    - `Tfull` exists and `Tfull.hash == B`
+  - then set `trust(pathKey, S) = { hash: H, seq }`
+  - else ignore
+
+5. All other combinations
+- ignore (no trust mutation)
+
+#### B) Explicit invalidations (`custom` entry with `kind: "invalidate"`)
+
+- if `scopeKey == "full"`:
+  - delete full trust for `pathKey`
+  - delete all range trusts for `pathKey`
+- else:
+  - delete only that range trust
+
+Later replay events can re-establish trust through anchor/guarded transitions.
+
+### 7.4 In-flight overlay
 
 Because tool result persistence timing may lag within the same agent turn, maintain in-memory overlay:
-- after successful read execution, overlay latest `(pathKey, scopeKey) -> servedHash`
+- after successful read execution, overlay latest `(pathKey, scopeKey) -> {hash, seqOverlay}`
+- `seqOverlay` is monotonic and chosen to remain fresher than replay-window `seq`
 - when computing knowledge, merge `replayKnowledge + overlay`
 - invalidate overlay when leaf changes (or on session/tree/compact events)
+
+### 7.5 Formal Trust State Machine (authoritative)
+
+This subsection is the formal definition of replay trust behavior. If any prose elsewhere is interpreted differently, this subsection is authoritative.
+
+#### 7.5.1 State model
+
+Per `pathKey`, trust state is:
+
+```ts
+interface ScopeTrust {
+  hash: string;
+  seq: number;
+}
+
+interface PathTrustState {
+  full?: ScopeTrust;                   // scopeKey = "full"
+  ranges: Map<ScopeKey, ScopeTrust>;   // only r:start:end keys
+}
+
+type TrustState = Map<string, PathTrustState>; // pathKey -> state
+```
+
+Constraints:
+- `full` and each range scope are independent trust slots.
+- `seq` is monotonic and used for freshness arbitration.
+
+#### 7.5.2 Event model
+
+Replay processes branch entries in order from replay boundary to leaf.
+
+Event classes:
+1. `ReadMeta` (valid `details.readcache.v===1` from `toolResult(read)`)
+2. `Invalidate` (valid `custom(pi-readcache)` with `kind:"invalidate"`)
+
+`seq` policy:
+- replay sequence is monotonic over encountered valid `ReadMeta` events.
+- invalidation events do not require sequence increments because they do not create trust entries.
+- overlay sequence is monotonic per active leaf and must be fresher than replay state for that leaf.
+- when both full and range candidates exist, higher `seq` wins.
+
+#### 7.5.3 Transition tables
+
+##### A) ReadMeta transitions
+
+| Event | Guard | State mutation | If guard fails |
+|---|---|---|---|
+| `mode=full`, any scope `S` | always | `trust(path,S) = {hash: servedHash, seq}` | n/a |
+| `mode=full_fallback`, any scope `S` | always | `trust(path,S) = {hash: servedHash, seq}` | n/a |
+| `mode=unchanged`, `S=full` | `baseHash` exists AND `trust(path,full)` exists AND `trust(path,full).hash == baseHash` AND `servedHash == baseHash` | `trust(path,full) = {hash: servedHash, seq}` | ignore event |
+| `mode=diff`, `S=full` | `baseHash` exists AND `trust(path,full)` exists AND `trust(path,full).hash == baseHash` | `trust(path,full) = {hash: servedHash, seq}` | ignore event |
+| `mode=unchanged_range`, `S=range` | `baseHash` exists AND ((`trust(path,S)` exists AND `trust(path,S).hash == baseHash`) OR (`trust(path,full)` exists AND `trust(path,full).hash == baseHash`)) | `trust(path,S) = {hash: servedHash, seq}` | ignore event |
+| any other mode/scope combination | none | none | ignore event |
+
+##### B) Invalidation transitions
+
+| Event | Guard | State mutation |
+|---|---|---|
+| `invalidate(path, full)` | none | delete `full`; delete all range scopes for `path` |
+| `invalidate(path, range)` | none | delete only that range scope |
+
+#### 7.5.4 Base candidate selection
+
+Given request scope `R`:
+
+| Request scope | Candidate rules |
+|---|---|
+| `full` | candidate = `trust(path,full)` only |
+| `range` | `candidateExact = trust(path,R)`; `candidateFull = trust(path,full)`; choose candidate with max `seq`; on equal `seq`, prefer exact-range candidate |
+
+Derived base:
+- `baseHash = candidate?.hash`
+- if no candidate: no base -> baseline full/slice behavior.
+
+#### 7.5.5 DOT graph — full scope trust
+
+```dot
+digraph FullScopeTrust {
+  rankdir=LR;
+  node [shape=ellipse];
+
+  U [label="U: Untrusted(full)"];
+  T [label="T(h): Trusted(full, hash=h)"];
+
+  U -> T [label="full|full_fallback on full / h:=servedHash"];
+  U -> U [label="unchanged|diff guard fail / ignore"];
+
+  T -> T [label="full|full_fallback on full / h:=servedHash"];
+  T -> T [label="unchanged on full, baseHash==h, servedHash==baseHash / h:=servedHash"];
+  T -> T [label="diff on full, baseHash==h / h:=servedHash"];
+  T -> T [label="unchanged|diff guard fail / ignore"];
+
+  T -> U [label="invalidate(full)"];
+  U -> U [label="invalidate(full) / no-op"];
+}
+```
+
+#### 7.5.6 DOT graph — range scope trust (one range `R`)
+
+```dot
+digraph RangeScopeTrust {
+  rankdir=LR;
+  node [shape=ellipse];
+
+  UR [label="UR: Untrusted(range R)"];
+  TR [label="TR(hR): Trusted(range R, hash=hR)"];
+  F  [shape=box, style=dashed, label="External full trust hF (optional)"];
+
+  UR -> TR [label="full|full_fallback on R / hR:=servedHash"];
+  TR -> TR [label="full|full_fallback on R / hR:=servedHash"];
+
+  UR -> TR [label="unchanged_range on R, baseHash==hF / hR:=servedHash"];
+  TR -> TR [label="unchanged_range on R, baseHash==hR OR baseHash==hF / hR:=servedHash"];
+
+  UR -> UR [label="unchanged_range guard fail / ignore"];
+  TR -> TR [label="unchanged_range guard fail / ignore"];
+
+  TR -> UR [label="invalidate(R)"];
+  TR -> UR [label="invalidate(full)"];
+  UR -> UR [label="invalidate(R|full) / no-op"];
+}
+```
+
+#### 7.5.7 Safety consequence
+
+A replay window containing only non-anchor entries (`unchanged`, `unchanged_range`, `diff`) cannot bootstrap trust unless guards validate against already trusted base. Therefore post-compaction false-`unchanged` is prevented.
 
 ---
 
 ## 8) Read decision algorithm (authoritative)
 
 Inputs: normalized `path`, `offset?`, `limit?`
+
+Execution-model note:
+- The logical decision flow below is specified as if baseline read output is produced on fallback branches.
+- Implementations may execute baseline read eagerly (before trust resolution) for compatibility/content-type handling, as long as externally observable behavior and modes match this algorithm.
 
 1. Resolve canonical path (`pathKey`).
 2. Load current file bytes and strict UTF-8 text.
@@ -248,17 +438,22 @@ Inputs: normalized `path`, `offset?`, `limit?`
    - `totalLines`
    - normalized range `(start,end)`
    - `scopeKey`
-4. Build active knowledge map for current leaf (Section 7).
-5. Determine `baseHash`:
-   - exact scope first: `knowledge[pathKey][scopeKey]`
-   - for range scope, fallback to `knowledge[pathKey]["full"]`
-6. If no `baseHash`:
+4. Build active trust knowledge map for current leaf (Section 7).
+5. Determine base candidate from trust state:
+   - if request scope is `full`: candidate = trust(pathKey, `full`)
+   - if request scope is range:
+     - candidateExact = trust(pathKey, requested range)
+     - candidateFull = trust(pathKey, `full`)
+     - choose freshest by highest `seq` when both exist
+     - on equal `seq`, keep deterministic exact-scope preference
+6. Set `baseHash = candidate?.hash`.
+7. If no `baseHash`:
    - return baseline full/sliced output
    - set `mode = full`
-7. If `baseHash === currentHash`:
+8. If `baseHash === currentHash`:
    - return unchanged marker (full or range form)
    - set `mode = unchanged` / `unchanged_range`
-8. Else (`baseHash !== currentHash`):
+9. Else (`baseHash !== currentHash`):
    - load `baseContent` from object store by `baseHash`
    - if missing: return baseline output, `mode = full_fallback`
    - if range scope:
@@ -269,11 +464,11 @@ Inputs: normalized `path`, `offset?`, `limit?`
      - compute unified diff base->current
      - if diff is useful and under limits: return diff payload (`mode = diff`)
      - else: baseline output (`mode = full_fallback`)
-9. Persist current content in object store if absent.
-10. Include `details.readcache` metadata in returned tool result.
-11. Update in-flight overlay with `(pathKey, scopeKey) -> currentHash`.
+10. Persist current content in object store if absent.
+11. Include `details.readcache` metadata in returned tool result.
+12. Update in-flight overlay with trust candidate for this scope (`hash = currentHash`, fresh overlay sequence).
 
-Important: step 8 range path uses slice equality; do not rely only on hunk overlap.
+Important: step 9 range path uses slice equality; do not rely only on hunk overlap.
 
 ---
 
@@ -496,6 +691,8 @@ extension/
 ## 20) Pseudocode
 
 ```ts
+// Note: overlaySet(...) is shorthand for assigning a fresh overlay sequence
+// that is newer than replay-window seq values for the active leaf.
 executeRead(params, ctx, signal): ToolResult {
   baseline = getBaselineReadTool(ctx.cwd)
 
@@ -508,8 +705,18 @@ executeRead(params, ctx, signal): ToolResult {
   currentHash = sha256(file.bytes)
   scopeKey = makeScopeKey(norm.start, norm.end, file.totalLines)
 
-  knowledge = getKnowledgeForCurrentLeaf(ctx.sessionManager) // replay + overlay
-  baseHash = knowledge.get(norm.pathKey, scopeKey) ?? (scopeKey !== "full" ? knowledge.get(norm.pathKey, "full") : undefined)
+  // Replay + overlay returns trust objects: { hash, seq }
+  knowledge = getKnowledgeForCurrentLeaf(ctx.sessionManager)
+
+  if (scopeKey === "full") {
+    candidate = knowledge.get(norm.pathKey, "full")
+  } else {
+    candidateExact = knowledge.get(norm.pathKey, scopeKey)
+    candidateFull = knowledge.get(norm.pathKey, "full")
+    candidate = fresher(candidateExact, candidateFull) // higher seq
+  }
+
+  baseHash = candidate?.hash
 
   if (!baseHash) {
     out = baseline.execute(...normalizedOffsetLimit...)
@@ -521,7 +728,7 @@ executeRead(params, ctx, signal): ToolResult {
 
   if (baseHash === currentHash) {
     out = unchangedMarkerResult(...)
-    attachReadcacheMeta(out, mode=(scopeKey==="full"?"unchanged":"unchanged_range"), servedHash=currentHash, baseHash)
+    attachReadcacheMeta(out, mode=(scopeKey==="full" ? "unchanged" : "unchanged_range"), servedHash=currentHash, baseHash)
     overlaySet(pathKey, scopeKey, currentHash)
     return out
   }
@@ -536,18 +743,19 @@ executeRead(params, ctx, signal): ToolResult {
   }
 
   if (scopeKey !== "full") {
-    if (slice(baseText, start,end) === slice(file.text,start,end)) {
+    if (slice(baseText, start, end) === slice(file.text, start, end)) {
       out = unchangedRangeElsewhereChangedMarker(...)
       attachReadcacheMeta(out, mode="unchanged_range", servedHash=currentHash, baseHash)
-      overlaySet(pathKey, scopeKey, currentHash)
       persistObjectIfAbsent(currentHash, file.text)
+      overlaySet(pathKey, scopeKey, currentHash)
       return out
     }
 
-    out = baseline.execute(...) // safe range-changed fallback
+    // Safe default for changed range
+    out = baseline.execute(...)
     attachReadcacheMeta(out, mode="full_fallback", servedHash=currentHash, baseHash)
-    overlaySet(pathKey, scopeKey, currentHash)
     persistObjectIfAbsent(currentHash, file.text)
+    overlaySet(pathKey, scopeKey, currentHash)
     return out
   }
 
@@ -590,24 +798,27 @@ executeRead(params, ctx, signal): ToolResult {
 13. latest compaction on path -> replay starts at boundary logic
 14. `/fork` then read -> independent branch replay state
 15. session switch/resume -> correct replay with no sidecar dependence
+16. post-compaction non-anchor replay cannot bootstrap trust:
+   - if replay window contains only `unchanged`/`diff` (without valid anchor chain), next read is baseline `full`/`full_fallback`, not `unchanged`
+17. stale range trust does not override fresher full trust (seq freshness selection)
 
 ### 21.4 Robustness
-16. missing base object hash -> fallback full, no crash
-17. object write collision under concurrency -> no corruption
-18. metadata missing/invalid in old entries -> ignored safely
-19. signal abort during diff -> clean abort
-20. image/binary reads delegated to baseline
+18. missing base object hash -> fallback full, no crash
+19. object write collision under concurrency -> no corruption
+20. metadata missing/invalid in old entries -> ignored safely
+21. signal abort during diff -> clean abort
+22. image/binary reads delegated to baseline
 
 ### 21.5 Compatibility
-21. UI truncation indicators still work
-22. output shape accepted by built-in renderer
-23. no requirement to change system prompt/tool instructions
+23. UI truncation indicators still work
+24. output shape accepted by built-in renderer
+25. no requirement to change system prompt/tool instructions
 
 ### 21.6 Refresh/invalidation behavior
-24. `/readcache-refresh` appends `custom` invalidation entry and next read is baseline full/slice
-25. `readcache_refresh` tool (if enabled) has same semantics as command
-26. after restart/resume, invalidation still applies on branch replay
-27. invalidating `full` scope also invalidates all range scopes for that path
+26. `/readcache-refresh` appends `custom` invalidation entry and next read is baseline full/slice
+27. `readcache_refresh` tool (if enabled) has same semantics as command
+28. after restart/resume, invalidation still applies on branch replay
+29. invalidating `full` scope also invalidates all range scopes for that path
 
 ---
 

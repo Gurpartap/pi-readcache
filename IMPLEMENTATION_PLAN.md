@@ -13,9 +13,11 @@ Primary goal: deliver correctness under pi session tree branching, compaction, a
 1. `read` override is drop-in compatible (same schema/behavior envelope).
 2. Correct under `/tree`, `/fork`, `/resume`, compaction, and restart.
 3. Selective-line logic is scope-correct (`full` + `r:start:end`).
-4. Unknown/unsafe states fall back to baseline read.
-5. No shared mutable pointer DB is used as canonical truth.
-6. Test matrix in this plan passes in full.
+4. Replay trust uses guarded state-machine transitions (anchor-only bootstrap + baseHash-validated derived transitions).
+5. Range base selection uses freshness (`seq`) when both range and full candidates exist.
+6. Unknown/unsafe states fall back to baseline read.
+7. No shared mutable pointer DB is used as canonical truth.
+8. Test matrix in this plan passes in full.
 
 ---
 
@@ -129,8 +131,9 @@ Define strict interfaces:
 - parsed replay event union:
   - `ReadKnowledgeEvent`
   - `ReadInvalidationEvent`
-- `KnowledgeMap`:
-  - `Map<pathKey, Map<scopeKey, servedHash>>`
+- trust-state types:
+  - `ScopeTrust = { hash: string; seq: number }`
+  - `KnowledgeMap = Map<pathKey, Map<scopeKey, ScopeTrust>>`
 - `NormalizedReadRequest`
 
 Acceptance:
@@ -155,6 +158,9 @@ Replay extractors:
 Acceptance:
 - resilient to malformed historical entries
 - invalid entries never throw in replay
+- mode-specific validation enforced:
+  - `full`/`full_fallback` may omit `baseHash`
+  - `unchanged`/`unchanged_range`/`diff` must include non-empty `baseHash`
 
 ---
 
@@ -235,13 +241,14 @@ Acceptance:
 
 ## 5.7 `replay.ts`
 
-Core correctness engine.
+Core correctness engine with guarded trust-state transitions.
 
 Functions:
-- `buildKnowledgeForLeaf(sessionManager, memoCache, overlay)`
+- `buildKnowledgeForLeaf(sessionManager, runtimeState)`
 - `findReplayStartIndex(branchEntries)`
-- `applyReadMeta(knowledge, meta)`
+- `applyReadMetaTransition(knowledge, meta, seq)`
 - `applyInvalidation(knowledge, invalidation)`
+- freshness-trust selection helper may live in `tool.ts` (current: `selectBaseTrust`) or be exported from replay utilities
 
 Replay boundary algorithm:
 1. get branch root->leaf
@@ -250,14 +257,28 @@ Replay boundary algorithm:
    - index(firstKeptEntryId) if present
    - else compaction index + 1
    - else 0
-4. replay read metadata and invalidations from start->leaf
+4. replay read metadata and invalidations from start->leaf with monotonic `seq`
+
+Guarded transitions (must match spec exactly):
+- Anchor modes (`full`, `full_fallback`) establish trust for their scope.
+- Derived modes require validated base chain:
+  - `unchanged(full)` applies only when trusted full hash equals `baseHash` (and `servedHash == baseHash`).
+  - `diff(full)` applies only when trusted full hash equals `baseHash`.
+  - `unchanged_range(range)` applies only when trusted range hash or trusted full hash equals `baseHash`.
+- Otherwise ignore event (no trust mutation).
+
+Invalidation transitions:
+- `invalidate(full)` clears full + all range trusts for path.
+- `invalidate(range)` clears that range trust only.
 
 Overlay merge:
 - apply in-memory overlay after replay
+- invalidate overlay on leaf/context change events
 
 Acceptance:
 - no stale knowledge across leaf changes
 - no dependence on global pointer tables
+- non-anchor metadata cannot bootstrap trust post-compaction
 
 ---
 
@@ -307,8 +328,11 @@ Algorithm steps:
 1. normalize input (path/range)
 2. get current file bytes/text (or baseline fallback)
 3. compute `currentHash`, range, scope
-4. build knowledge for current leaf
-5. resolve `baseHash` from exact scope else full scope fallback
+4. build trust knowledge for current leaf
+5. resolve base candidate:
+   - full request: full trust only
+   - range request: choose freshest (`seq`) of exact-range trust and full trust
+   - deterministic tie-break: on equal `seq`, prefer exact-range candidate
 6. no base -> baseline full/slice + meta mode `full`
 7. same hash -> unchanged marker + mode `unchanged`/`unchanged_range`
 8. changed:
@@ -327,6 +351,8 @@ Algorithm steps:
 Critical notes:
 - baseline fallback must keep builtin semantics and truncation behavior
 - if baseline produced special first-line-over-limit behavior, preserve it
+- implementation may perform eager baseline read prefetch for compatibility/content-type handling; this must not change observable decision semantics
+- trust must never be created from `unchanged`/`diff`/`unchanged_range` without valid base-chain guards
 
 Acceptance:
 - every uncertain condition routes to baseline safely
@@ -384,6 +410,9 @@ Acceptance:
 13. Abort signal during read/diff.
 14. Non-text files delegated safely.
 15. Very large files skip diff path.
+16. Post-compaction replay window with only non-anchor entries does not produce `unchanged`.
+17. `diff` replay without trusted matching `baseHash` is ignored.
+18. Range request with both range/full candidates picks freshest by `seq`.
 
 ---
 
@@ -411,6 +440,21 @@ Acceptance:
   - compaction boundary logic
   - invalidation replay semantics
   - full-scope invalidation wipes range scopes
+  - `unchanged` without trusted full anchor is ignored
+  - `diff` without trusted matching base is ignored
+  - `unchanged_range` requires trusted matching range/full base
+  - anchor modes establish trust
+  - freshness selection (`seq`) behavior is deterministic
+  - regression IDs:
+    - `applies_full_anchor_without_prior_trust`
+    - `ignores_unchanged_without_full_anchor`
+    - `applies_unchanged_with_matching_full_anchor`
+    - `ignores_diff_without_matching_full_anchor`
+    - `applies_diff_with_matching_full_anchor`
+    - `applies_unchanged_range_with_matching_range_anchor`
+    - `applies_unchanged_range_with_matching_full_anchor`
+    - `full_invalidation_clears_all_scopes`
+    - `range_invalidation_clears_only_range_scope`
 
 ## 8.2 Integration tests
 
@@ -426,6 +470,10 @@ Acceptance:
 
 - `compaction-boundary.test.ts`
   - pre/post compaction replay boundary correctness
+  - regression: compaction window containing only non-anchor readcache entries must not yield `unchanged`
+  - regression IDs:
+    - `does_not_bootstrap_trust_from_non_anchor_unchanged_entries_after_compaction`
+    - `prefers_fresher_full_trust_over_older_exact_range_trust_when_selecting_baseHash`
 
 - `refresh-invalidation.test.ts`
   - refresh command + tool invalidation durability
@@ -462,10 +510,12 @@ Acceptance:
 - baseline read delegation
 - metadata attachment
 
-### Phase B — Replay correctness
-- replay engine
+### Phase B — Replay correctness (trust-state machine)
+- replay engine with guarded transitions
 - compaction boundary
+- anchor-vs-derived trust enforcement
 - overlay merge
+- freshness (`seq`) base candidate selection
 
 ### Phase C — Decision engine
 - full/unchanged/range slice compare
@@ -488,6 +538,7 @@ Ship only after Phase E tests pass.
 
 - Diff enabled only for `full` scope
 - Range changes use baseline fallback
+- Guarded trust transitions (non-anchor modes cannot bootstrap trust)
 - Strict fail-open to baseline on any uncertainty
 - Object store persists indefinitely (GC optional in later version)
 
@@ -503,9 +554,11 @@ Future optional improvements (post-ship):
 1. Do not create a global mutable session pointer table as source of truth.
 2. Do not make correctness depend on event ordering.
 3. Do not skip branch replay in favor of cached memo without leaf key checks.
-4. Do not emit unchanged markers without verified base hash from replay knowledge.
-5. Do not alter built-in `read` schema.
-6. Do not break image read behavior.
+4. Do not emit unchanged markers without verified base hash from replay trust knowledge.
+5. Do not let non-anchor modes (`unchanged`, `unchanged_range`, `diff`) establish trust without validated base-chain guards.
+6. Do not ignore freshness (`seq`) when choosing between range and full base candidates.
+7. Do not alter built-in `read` schema.
+8. Do not break image read behavior.
 
 ---
 
@@ -513,11 +566,37 @@ Future optional improvements (post-ship):
 
 All items required:
 
-- [ ] All modules implemented and typechecked.
-- [ ] Unit and integration test matrix complete and passing.
-- [ ] Manual QA checklist complete.
-- [ ] No known correctness gaps in tree/compaction/range behavior.
-- [ ] Baseline fallback proven for all failure paths.
-- [ ] `readcache-refresh` invalidation durable across restart/resume.
+- [x] All modules implemented and typechecked.
+- [x] Unit and integration test matrix complete and passing.
+- [x] Manual QA checklist complete.
+- [x] No known correctness gaps in tree/compaction/range behavior.
+- [x] Baseline fallback proven for all failure paths.
+- [x] `readcache-refresh` invalidation durable across restart/resume.
+- [x] Regression test passes: post-compaction replay with only non-anchor entries does not return `unchanged`.
+- [x] Trust-state-machine guards and freshness (`seq`) selection are verified by tests.
+- [x] `IMPLEMENTATION_SPEC.md` and `IMPLEMENTATION_PLAN.md` are in sync with shipped behavior.
 
 If any box is unchecked, do not call implementation complete.
+
+---
+
+## 14) Trust-state-machine migration checklist (from current extension state)
+
+Use this checklist when migrating an existing implementation that still replays read metadata unconditionally.
+
+1. Add failing regression tests first:
+   - compaction + non-anchor replay should not produce `unchanged`
+     - `test/integration/compaction-boundary.test.ts :: does_not_bootstrap_trust_from_non_anchor_unchanged_entries_after_compaction`
+   - derived modes without trusted base are ignored
+     - `test/unit/replay.test.ts :: ignores_unchanged_without_full_anchor`
+     - `test/unit/replay.test.ts :: ignores_diff_without_matching_full_anchor`
+2. Change `KnowledgeMap` to trust objects with freshness:
+   - `{ hash, seq }`
+3. Replace unconditional replay writes with guarded transition function.
+4. Implement freshness-based base selection for range requests.
+   - `test/integration/compaction-boundary.test.ts :: prefers_fresher_full_trust_over_older_exact_range_trust_when_selecting_baseHash`
+5. Tighten metadata validation rules for `baseHash` by mode.
+6. Re-run full suite + typecheck.
+7. Update docs to match final shipped behavior.
+
+This migration checklist is mandatory for correctness closure.

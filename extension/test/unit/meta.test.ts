@@ -26,6 +26,54 @@ describe("meta", () => {
 		expect(isReadCacheMetaV1(meta)).toBe(true);
 		expect(isReadCacheMetaV1({ ...meta, totalLines: 0 })).toBe(false);
 		expect(isReadCacheMetaV1({ ...meta, scopeKey: "r:9:2" })).toBe(false);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "unchanged",
+				baseHash: undefined,
+			}),
+		).toBe(false);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "unchanged",
+				baseHash: "def",
+			}),
+		).toBe(true);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "diff",
+				baseHash: "def",
+			}),
+		).toBe(true);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "unchanged_range",
+				scopeKey: "r:5:7",
+				rangeStart: 5,
+				rangeEnd: 7,
+				baseHash: "def",
+			}),
+		).toBe(true);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "unchanged_range",
+				scopeKey: "r:5:7",
+				rangeStart: 5,
+				rangeEnd: 7,
+				baseHash: undefined,
+			}),
+		).toBe(false);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "full_fallback",
+				baseHash: undefined,
+			}),
+		).toBe(true);
 	});
 
 	it("validates invalidation payloads", () => {

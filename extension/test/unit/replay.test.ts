@@ -4,35 +4,36 @@ import { SCOPE_FULL } from "../../src/constants.js";
 import { buildInvalidationV1, buildReadCacheMetaV1 } from "../../src/meta.js";
 import {
 	applyInvalidation,
-	applyReadMeta,
+	applyReadMetaTransition,
 	buildKnowledgeForLeaf,
 	createReplayRuntimeState,
 	findReplayStartIndex,
 	overlaySet,
 	replayKnowledgeFromBranch,
 } from "../../src/replay.js";
-import type { ScopeKey } from "../../src/types.js";
+import type { KnowledgeMap, ReadCacheMetaV1, ScopeKey } from "../../src/types.js";
 
 type SessionManagerView = ExtensionContext["sessionManager"];
+
+function createMeta(overrides: Partial<Omit<ReadCacheMetaV1, "v">> & Pick<ReadCacheMetaV1, "pathKey" | "scopeKey" | "servedHash" | "mode">): ReadCacheMetaV1 {
+	return buildReadCacheMetaV1({
+		pathKey: overrides.pathKey,
+		scopeKey: overrides.scopeKey,
+		servedHash: overrides.servedHash,
+		mode: overrides.mode,
+		...(overrides.baseHash !== undefined ? { baseHash: overrides.baseHash } : {}),
+		totalLines: overrides.totalLines ?? 10,
+		rangeStart: overrides.rangeStart ?? 1,
+		rangeEnd: overrides.rangeEnd ?? 10,
+		bytes: overrides.bytes ?? 100,
+	});
+}
 
 function createReadEntry(
 	id: string,
 	parentId: string | null,
-	pathKey: string,
-	scopeKey: ScopeKey,
-	servedHash: string,
+	meta: ReadCacheMetaV1,
 ): SessionEntry {
-	const meta = buildReadCacheMetaV1({
-		pathKey,
-		scopeKey,
-		servedHash,
-		mode: "full",
-		totalLines: 10,
-		rangeStart: 1,
-		rangeEnd: 10,
-		bytes: 100,
-	});
-
 	return {
 		type: "message",
 		id,
@@ -100,10 +101,10 @@ describe("replay", () => {
 	it("finds replay start from latest compaction and firstKeptEntryId", () => {
 		const path = "/tmp/file.txt";
 		const entries: SessionEntry[] = [
-			createReadEntry("e1", null, path, SCOPE_FULL, "a".repeat(64)),
-			createReadEntry("e2", "e1", path, SCOPE_FULL, "b".repeat(64)),
+			createReadEntry("e1", null, createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" })),
+			createReadEntry("e2", "e1", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "b".repeat(64), mode: "full" })),
 			createCompactionEntry("e3", "e2", "e2"),
-			createReadEntry("e4", "e3", path, SCOPE_FULL, "c".repeat(64)),
+			createReadEntry("e4", "e3", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "c".repeat(64), mode: "full" })),
 		];
 
 		const boundary = findReplayStartIndex(entries);
@@ -114,9 +115,9 @@ describe("replay", () => {
 	it("falls back to compaction+1 when firstKeptEntryId is missing", () => {
 		const path = "/tmp/file.txt";
 		const entries: SessionEntry[] = [
-			createReadEntry("e1", null, path, SCOPE_FULL, "a".repeat(64)),
+			createReadEntry("e1", null, createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" })),
 			createCompactionEntry("e2", "e1", "missing"),
-			createReadEntry("e3", "e2", path, SCOPE_FULL, "b".repeat(64)),
+			createReadEntry("e3", "e2", createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "b".repeat(64), mode: "full" })),
 		];
 
 		const boundary = findReplayStartIndex(entries);
@@ -124,23 +125,257 @@ describe("replay", () => {
 		expect(boundary.boundaryKey).toBe("compaction:e2");
 	});
 
-	it("replays read metadata and applies invalidations safely", () => {
+	it("applies_full_anchor_without_prior_trust", () => {
 		const path = "/tmp/file.txt";
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+			1,
+		);
+
+		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "a".repeat(64), seq: 1 });
+	});
+
+	it("ignores_unchanged_without_full_anchor", () => {
+		const path = "/tmp/file.txt";
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({
+				pathKey: path,
+				scopeKey: SCOPE_FULL,
+				servedHash: "a".repeat(64),
+				baseHash: "a".repeat(64),
+				mode: "unchanged",
+			}),
+			1,
+		);
+
+		expect(knowledge.size).toBe(0);
+	});
+
+	it("applies_unchanged_with_matching_full_anchor", () => {
+		const path = "/tmp/file.txt";
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({
+				pathKey: path,
+				scopeKey: SCOPE_FULL,
+				servedHash: "a".repeat(64),
+				baseHash: "a".repeat(64),
+				mode: "unchanged",
+			}),
+			2,
+		);
+
+		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "a".repeat(64), seq: 2 });
+	});
+
+	it("ignores_diff_without_matching_full_anchor", () => {
+		const path = "/tmp/file.txt";
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "0".repeat(64), mode: "full" }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({
+				pathKey: path,
+				scopeKey: SCOPE_FULL,
+				servedHash: "b".repeat(64),
+				baseHash: "a".repeat(64),
+				mode: "diff",
+			}),
+			2,
+		);
+
+		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "0".repeat(64), seq: 1 });
+	});
+
+	it("applies_diff_with_matching_full_anchor", () => {
+		const path = "/tmp/file.txt";
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({
+				pathKey: path,
+				scopeKey: SCOPE_FULL,
+				servedHash: "b".repeat(64),
+				baseHash: "a".repeat(64),
+				mode: "diff",
+			}),
+			2,
+		);
+
+		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "b".repeat(64), seq: 2 });
+	});
+
+	it("applies_unchanged_range_with_matching_range_anchor", () => {
+		const path = "/tmp/file.txt";
+		const scope = "r:2:4" as const;
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: scope, servedHash: "a".repeat(64), mode: "full", rangeStart: 2, rangeEnd: 4 }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({
+				pathKey: path,
+				scopeKey: scope,
+				servedHash: "b".repeat(64),
+				baseHash: "a".repeat(64),
+				mode: "unchanged_range",
+				rangeStart: 2,
+				rangeEnd: 4,
+			}),
+			2,
+		);
+
+		expect(knowledge.get(path)?.get(scope)).toEqual({ hash: "b".repeat(64), seq: 2 });
+	});
+
+	it("applies_unchanged_range_with_matching_full_anchor", () => {
+		const path = "/tmp/file.txt";
+		const scope = "r:2:4" as const;
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({
+				pathKey: path,
+				scopeKey: scope,
+				servedHash: "b".repeat(64),
+				baseHash: "a".repeat(64),
+				mode: "unchanged_range",
+				rangeStart: 2,
+				rangeEnd: 4,
+			}),
+			2,
+		);
+
+		expect(knowledge.get(path)?.get(scope)).toEqual({ hash: "b".repeat(64), seq: 2 });
+	});
+
+	it("full_invalidation_clears_all_scopes", () => {
+		const path = "/tmp/file.txt";
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: "r:2:4", servedHash: "b".repeat(64), mode: "full", rangeStart: 2, rangeEnd: 4 }),
+			2,
+		);
+
+		applyInvalidation(knowledge, buildInvalidationV1(path, SCOPE_FULL, Date.now()));
+		expect(knowledge.has(path)).toBe(false);
+	});
+
+	it("range_invalidation_clears_only_range_scope", () => {
+		const path = "/tmp/file.txt";
+		const scope = "r:2:4" as const;
+		const knowledge: KnowledgeMap = new Map();
+
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+			1,
+		);
+		applyReadMetaTransition(
+			knowledge,
+			createMeta({ pathKey: path, scopeKey: scope, servedHash: "b".repeat(64), mode: "full", rangeStart: 2, rangeEnd: 4 }),
+			2,
+		);
+
+		applyInvalidation(knowledge, buildInvalidationV1(path, scope, Date.now()));
+		expect(knowledge.get(path)?.get(scope)).toBeUndefined();
+		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "a".repeat(64), seq: 1 });
+	});
+
+	it("replays read metadata with guarded transitions and invalidations", () => {
+		const path = "/tmp/file.txt";
+		const scope = "r:2:4" as const;
 		const entries: SessionEntry[] = [
-			createReadEntry("e1", null, path, SCOPE_FULL, "a".repeat(64)),
-			createReadEntry("e2", "e1", path, "r:2:4", "b".repeat(64)),
-			createInvalidationEntry("e3", "e2", path, "r:2:4"),
+			createReadEntry("e1", null, createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" })),
+			createReadEntry(
+				"e2",
+				"e1",
+				createMeta({
+					pathKey: path,
+					scopeKey: SCOPE_FULL,
+					servedHash: "a".repeat(64),
+					baseHash: "a".repeat(64),
+					mode: "unchanged",
+				}),
+			),
+			createReadEntry(
+				"e3",
+				"e2",
+				createMeta({
+					pathKey: path,
+					scopeKey: scope,
+					servedHash: "b".repeat(64),
+					baseHash: "a".repeat(64),
+					mode: "unchanged_range",
+					rangeStart: 2,
+					rangeEnd: 4,
+				}),
+			),
+			createInvalidationEntry("e4", "e3", path, scope),
 			{
 				type: "message",
-				id: "e4",
-				parentId: "e3",
+				id: "e5",
+				parentId: "e4",
 				timestamp: new Date().toISOString(),
 				message: {
 					role: "toolResult",
-					toolCallId: "tool-e4",
+					toolCallId: "tool-e5",
 					toolName: "read",
 					content: [{ type: "text", text: "ignored" }],
-					details: { readcache: { broken: true } },
+					details: {
+						readcache: {
+							v: 1,
+							pathKey: path,
+							scopeKey: SCOPE_FULL,
+							servedHash: "x".repeat(64),
+							mode: "unchanged",
+							totalLines: 10,
+							rangeStart: 1,
+							rangeEnd: 10,
+							bytes: 100,
+						},
+					},
 					isError: false,
 					timestamp: Date.now(),
 				},
@@ -148,43 +383,8 @@ describe("replay", () => {
 		];
 
 		const knowledge = replayKnowledgeFromBranch(entries, 0);
-		expect(knowledge.get(path)?.get(SCOPE_FULL)).toBe("a".repeat(64));
-		expect(knowledge.get(path)?.get("r:2:4")).toBeUndefined();
-	});
-
-	it("full-scope invalidation clears all range scopes for a path", () => {
-		const path = "/tmp/file.txt";
-		const knowledge = new Map<string, Map<ScopeKey, string>>();
-
-		applyReadMeta(
-			knowledge,
-			buildReadCacheMetaV1({
-				pathKey: path,
-				scopeKey: SCOPE_FULL,
-				servedHash: "a".repeat(64),
-				mode: "full",
-				totalLines: 10,
-				rangeStart: 1,
-				rangeEnd: 10,
-				bytes: 100,
-			}),
-		);
-		applyReadMeta(
-			knowledge,
-			buildReadCacheMetaV1({
-				pathKey: path,
-				scopeKey: "r:2:4",
-				servedHash: "b".repeat(64),
-				mode: "full",
-				totalLines: 10,
-				rangeStart: 2,
-				rangeEnd: 4,
-				bytes: 100,
-			}),
-		);
-
-		applyInvalidation(knowledge, buildInvalidationV1(path, SCOPE_FULL, Date.now()));
-		expect(knowledge.has(path)).toBe(false);
+		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "a".repeat(64), seq: 2 });
+		expect(knowledge.get(path)?.get(scope)).toBeUndefined();
 	});
 
 	it("merges overlay with replay knowledge and clears overlay after leaf changes", () => {
@@ -193,14 +393,20 @@ describe("replay", () => {
 		const state: { sessionId: string; leafId: string | null; branch: SessionEntry[] } = {
 			sessionId: "session-1",
 			leafId: "e1",
-			branch: [createReadEntry("e1", null, path, SCOPE_FULL, "a".repeat(64))],
+			branch: [
+				createReadEntry(
+					"e1",
+					null,
+					createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+				),
+			],
 		};
 		const sessionManager = createSessionManagerStub(state);
 
-		expect(buildKnowledgeForLeaf(sessionManager, runtime).get(path)?.get(SCOPE_FULL)).toBe("a".repeat(64));
+		expect(buildKnowledgeForLeaf(sessionManager, runtime).get(path)?.get(SCOPE_FULL)?.hash).toBe("a".repeat(64));
 
 		overlaySet(runtime, sessionManager, path, SCOPE_FULL, "b".repeat(64));
-		expect(buildKnowledgeForLeaf(sessionManager, runtime).get(path)?.get(SCOPE_FULL)).toBe("b".repeat(64));
+		expect(buildKnowledgeForLeaf(sessionManager, runtime).get(path)?.get(SCOPE_FULL)?.hash).toBe("b".repeat(64));
 
 		state.leafId = null;
 		state.branch = [];

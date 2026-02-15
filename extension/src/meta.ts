@@ -71,11 +71,16 @@ export function isReadCacheMetaV1(value: unknown): value is ReadCacheMetaV1 {
 		return false;
 	}
 
-	if (value.baseHash !== undefined && (typeof value.baseHash !== "string" || value.baseHash.length === 0)) {
+	if (!isReadCacheMode(value.mode)) {
 		return false;
 	}
 
-	if (!isReadCacheMode(value.mode)) {
+	const requiresBaseHash = value.mode === "unchanged" || value.mode === "unchanged_range" || value.mode === "diff";
+	if (requiresBaseHash) {
+		if (typeof value.baseHash !== "string" || value.baseHash.length === 0) {
+			return false;
+		}
+	} else if (value.baseHash !== undefined && (typeof value.baseHash !== "string" || value.baseHash.length === 0)) {
 		return false;
 	}
 

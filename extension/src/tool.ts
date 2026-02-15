@@ -22,7 +22,7 @@ import { hashBytes, loadObject, persistObjectIfAbsent } from "./object-store.js"
 import { normalizeOffsetLimit, parseTrailingRangeIfNeeded, scopeKeyForRange } from "./path.js";
 import { buildKnowledgeForLeaf, createReplayRuntimeState, overlaySet, type ReplayRuntimeState } from "./replay.js";
 import { compareSlices, splitLines, truncateForReadcache } from "./text.js";
-import type { ReadCacheMetaV1, ReadToolDetailsExt, ScopeKey } from "./types.js";
+import type { ReadCacheMetaV1, ReadToolDetailsExt, ScopeKey, ScopeTrust } from "./types.js";
 
 const UTF8_STRICT_DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -135,6 +135,26 @@ function buildReadcacheMeta(
 	});
 }
 
+function selectBaseTrust(pathKnowledge: Map<ScopeKey, ScopeTrust> | undefined, scopeKey: ScopeKey): ScopeTrust | undefined {
+	if (!pathKnowledge) {
+		return undefined;
+	}
+
+	if (scopeKey === SCOPE_FULL) {
+		return pathKnowledge.get(SCOPE_FULL);
+	}
+
+	const exactTrust = pathKnowledge.get(scopeKey);
+	const fullTrust = pathKnowledge.get(SCOPE_FULL);
+	if (!exactTrust) {
+		return fullTrust;
+	}
+	if (!fullTrust) {
+		return exactTrust;
+	}
+	return exactTrust.seq >= fullTrust.seq ? exactTrust : fullTrust;
+}
+
 function buildUnchangedMarker(scopeKey: ScopeKey, start: number, end: number, totalLines: number, outsideRangeChanged: boolean): string {
 	if (scopeKey === SCOPE_FULL) {
 		return `[readcache: unchanged, ${totalLines} lines]`;
@@ -244,7 +264,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 			const scopeKey = scopeKeyForRange(start, end, totalLines);
 			const knowledge = buildKnowledgeForLeaf(ctx.sessionManager, runtimeState);
 			const pathKnowledge = knowledge.get(pathKey);
-			const baseHash = pathKnowledge?.get(scopeKey) ?? (scopeKey !== SCOPE_FULL ? pathKnowledge?.get(SCOPE_FULL) : undefined);
+			const baseHash = selectBaseTrust(pathKnowledge, scopeKey)?.hash;
 
 			if (!baseHash) {
 				const meta = buildReadcacheMeta(

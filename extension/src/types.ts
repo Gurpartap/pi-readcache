@@ -5,6 +5,11 @@ import type { SCOPE_FULL } from "./constants.js";
 export type ScopeRangeKey = `r:${number}:${number}`;
 export type ScopeKey = typeof SCOPE_FULL | ScopeRangeKey;
 
+export interface ScopeTrust {
+	hash: string;
+	seq: number;
+}
+
 export type ReadCacheMode = "full" | "unchanged" | "unchanged_range" | "diff" | "full_fallback";
 
 export interface ReadCacheMetaV1 {
@@ -43,7 +48,7 @@ export interface ReadInvalidationEvent {
 
 export type ReplayEvent = ReadKnowledgeEvent | ReadInvalidationEvent;
 
-export type KnowledgeMap = Map<string, Map<ScopeKey, string>>;
+export type KnowledgeMap = Map<string, Map<ScopeKey, ScopeTrust>>;
 
 export interface NormalizedReadRequest {
 	inputPath: string;

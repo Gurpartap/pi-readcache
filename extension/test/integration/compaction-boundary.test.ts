@@ -44,7 +44,7 @@ function getText(result: AgentToolResult<ReadToolDetails | undefined>): string {
 }
 
 describe("integration: compaction replay boundary", () => {
-	it("starts replay from firstKeptEntryId when present", async () => {
+	it("does_not_bootstrap_trust_from_non_anchor_unchanged_entries_after_compaction", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-compact-"));
 		const filePath = join(cwd, "sample.txt");
 		await writeFile(filePath, "v1", "utf-8");
@@ -54,21 +54,18 @@ describe("integration: compaction replay boundary", () => {
 		const ctx = asContext(cwd, sessionManager);
 
 		const firstRead = await tool.execute("call-1", { path: "sample.txt" }, undefined, undefined, ctx);
-		const firstEntryId = appendReadResult(sessionManager, "call-1", firstRead);
 		expect(firstRead.details?.readcache?.mode).toBe("full");
+		appendReadResult(sessionManager, "call-1", firstRead);
 
-		await writeFile(filePath, "v2", "utf-8");
 		const secondRead = await tool.execute("call-2", { path: "sample.txt" }, undefined, undefined, ctx);
-		const secondEntryId = appendReadResult(sessionManager, "call-2", secondRead);
-		expect(secondRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(secondRead.details?.readcache?.mode).toBe("unchanged");
+		const unchangedEntryId = appendReadResult(sessionManager, "call-2", secondRead);
 
-		sessionManager.appendCompaction("compact", secondEntryId, 100);
+		sessionManager.appendCompaction("compact", unchangedEntryId, 100);
 
 		const postCompactionRead = await tool.execute("call-3", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(postCompactionRead.details?.readcache?.mode).toBe("unchanged");
-
-		// Keep firstEntryId referenced to ensure test asserts branch is non-trivial.
-		expect(firstEntryId.length).toBeGreaterThan(0);
+		expect(postCompactionRead.details?.readcache?.mode).not.toBe("unchanged");
+		expect(["full", "full_fallback"]).toContain(postCompactionRead.details?.readcache?.mode);
 	});
 
 	it("falls back to compaction+1 when firstKeptEntryId is absent on the active path", async () => {
@@ -89,6 +86,34 @@ describe("integration: compaction replay boundary", () => {
 		const postCompactionRead = await tool.execute("call-b", { path: "sample.txt" }, undefined, undefined, ctx);
 		expect(postCompactionRead.details?.readcache?.mode).toBe("full");
 		expect(getText(postCompactionRead)).toContain("stable");
+	});
+
+	it("prefers_fresher_full_trust_over_older_exact_range_trust_when_selecting_baseHash", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-compact-"));
+		const filePath = join(cwd, "sample.txt");
+		await writeFile(filePath, ["line 1", "line 2", "line 3", "line 4", "line 5"].join("\n"), "utf-8");
+
+		const sessionManager = SessionManager.inMemory(cwd);
+		const tool = createReadOverrideTool(createReplayRuntimeState());
+		const ctx = asContext(cwd, sessionManager);
+
+		const rangeAnchor = await tool.execute("call-range-1", { path: "sample.txt:2-4" }, undefined, undefined, ctx);
+		expect(rangeAnchor.details?.readcache?.mode).toBe("full");
+		appendReadResult(sessionManager, "call-range-1", rangeAnchor);
+		const olderRangeHash = rangeAnchor.details?.readcache?.servedHash;
+		expect(olderRangeHash).toBeDefined();
+
+		await writeFile(filePath, ["LINE 1 changed", "line 2", "line 3", "line 4", "line 5"].join("\n"), "utf-8");
+		const fullAnchor = await tool.execute("call-full-1", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(fullAnchor.details?.readcache?.mode).toBe("full");
+		appendReadResult(sessionManager, "call-full-1", fullAnchor);
+		const fresherFullHash = fullAnchor.details?.readcache?.servedHash;
+		expect(fresherFullHash).toBeDefined();
+
+		const secondRangeRead = await tool.execute("call-range-2", { path: "sample.txt:2-4" }, undefined, undefined, ctx);
+		expect(secondRangeRead.details?.readcache?.mode).toBe("unchanged_range");
+		expect(secondRangeRead.details?.readcache?.baseHash).toBe(fresherFullHash);
+		expect(secondRangeRead.details?.readcache?.baseHash).not.toBe(olderRangeHash);
 	});
 
 	it("replays historical state correctly when tree-navigating to a pre-compaction point", async () => {

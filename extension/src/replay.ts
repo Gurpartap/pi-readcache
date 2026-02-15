@@ -1,9 +1,17 @@
 import type { ExtensionContext, SessionEntry } from "@mariozechner/pi-coding-agent";
 import { SCOPE_FULL } from "./constants.js";
 import { extractInvalidationFromSessionEntry, extractReadMetaFromSessionEntry } from "./meta.js";
-import type { KnowledgeMap, ReadCacheInvalidationV1, ReadCacheMetaV1, ScopeKey } from "./types.js";
+import type {
+	KnowledgeMap,
+	ReadCacheInvalidationV1,
+	ReadCacheMetaV1,
+	ScopeKey,
+	ScopeTrust,
+} from "./types.js";
 
 type SessionManagerView = ExtensionContext["sessionManager"];
+
+const OVERLAY_SEQ_START = 1_000_000_000;
 
 interface OverlayState {
 	leafId: string | null;
@@ -13,6 +21,7 @@ interface OverlayState {
 export interface ReplayRuntimeState {
 	memoByLeaf: Map<string, KnowledgeMap>;
 	overlayBySession: Map<string, OverlayState>;
+	nextOverlaySeq: number;
 }
 
 export interface ReplayBoundary {
@@ -23,7 +32,11 @@ export interface ReplayBoundary {
 function cloneKnowledgeMap(source: KnowledgeMap): KnowledgeMap {
 	const cloned: KnowledgeMap = new Map();
 	for (const [pathKey, scopes] of source.entries()) {
-		cloned.set(pathKey, new Map(scopes));
+		const clonedScopes = new Map<ScopeKey, ScopeTrust>();
+		for (const [scopeKey, trust] of scopes.entries()) {
+			clonedScopes.set(scopeKey, { ...trust });
+		}
+		cloned.set(pathKey, clonedScopes);
 	}
 	return cloned;
 }
@@ -32,27 +45,31 @@ function getMemoKey(sessionId: string, leafId: string | null, boundaryKey: strin
 	return `${sessionId}:${leafId ?? "null"}:${boundaryKey}`;
 }
 
-function ensureScopeMap(knowledge: KnowledgeMap, pathKey: string): Map<ScopeKey, string> {
+function ensureScopeMap(knowledge: KnowledgeMap, pathKey: string): Map<ScopeKey, ScopeTrust> {
 	const existing = knowledge.get(pathKey);
 	if (existing) {
 		return existing;
 	}
-	const created = new Map<ScopeKey, string>();
+	const created = new Map<ScopeKey, ScopeTrust>();
 	knowledge.set(pathKey, created);
 	return created;
 }
 
-function setKnowledgeHash(knowledge: KnowledgeMap, pathKey: string, scopeKey: ScopeKey, servedHash: string): void {
+export function getTrust(knowledge: KnowledgeMap, pathKey: string, scopeKey: ScopeKey): ScopeTrust | undefined {
+	return knowledge.get(pathKey)?.get(scopeKey);
+}
+
+export function setTrust(knowledge: KnowledgeMap, pathKey: string, scopeKey: ScopeKey, hash: string, seq: number): void {
 	const scopes = ensureScopeMap(knowledge, pathKey);
-	scopes.set(scopeKey, servedHash);
+	scopes.set(scopeKey, { hash, seq });
 }
 
 function mergeKnowledge(base: KnowledgeMap, overlay: KnowledgeMap): KnowledgeMap {
 	const merged = cloneKnowledgeMap(base);
 	for (const [pathKey, overlayScopes] of overlay.entries()) {
 		const targetScopes = ensureScopeMap(merged, pathKey);
-		for (const [scopeKey, hash] of overlayScopes.entries()) {
-			targetScopes.set(scopeKey, hash);
+		for (const [scopeKey, trust] of overlayScopes.entries()) {
+			targetScopes.set(scopeKey, { ...trust });
 		}
 	}
 	return merged;
@@ -82,12 +99,14 @@ export function createReplayRuntimeState(): ReplayRuntimeState {
 	return {
 		memoByLeaf: new Map(),
 		overlayBySession: new Map(),
+		nextOverlaySeq: OVERLAY_SEQ_START,
 	};
 }
 
 export function clearReplayRuntimeState(runtimeState: ReplayRuntimeState): void {
 	runtimeState.memoByLeaf.clear();
 	runtimeState.overlayBySession.clear();
+	runtimeState.nextOverlaySeq = OVERLAY_SEQ_START;
 }
 
 export function findReplayStartIndex(branchEntries: SessionEntry[]): ReplayBoundary {
@@ -118,8 +137,50 @@ export function findReplayStartIndex(branchEntries: SessionEntry[]): ReplayBound
 	};
 }
 
-export function applyReadMeta(knowledge: KnowledgeMap, meta: ReadCacheMetaV1): void {
-	setKnowledgeHash(knowledge, meta.pathKey, meta.scopeKey, meta.servedHash);
+export function applyReadMetaTransition(knowledge: KnowledgeMap, meta: ReadCacheMetaV1, seq: number): void {
+	const { pathKey, scopeKey, servedHash, baseHash, mode } = meta;
+	const fullTrust = getTrust(knowledge, pathKey, SCOPE_FULL);
+	const rangeTrust = scopeKey === SCOPE_FULL ? undefined : getTrust(knowledge, pathKey, scopeKey);
+
+	if (mode === "full" || mode === "full_fallback") {
+		setTrust(knowledge, pathKey, scopeKey, servedHash, seq);
+		return;
+	}
+
+	if (mode === "unchanged" && scopeKey === SCOPE_FULL) {
+		if (!baseHash) {
+			return;
+		}
+		if (!fullTrust || fullTrust.hash !== baseHash) {
+			return;
+		}
+		if (servedHash !== baseHash) {
+			return;
+		}
+		setTrust(knowledge, pathKey, SCOPE_FULL, servedHash, seq);
+		return;
+	}
+
+	if (mode === "diff" && scopeKey === SCOPE_FULL) {
+		if (!baseHash) {
+			return;
+		}
+		if (!fullTrust || fullTrust.hash !== baseHash) {
+			return;
+		}
+		setTrust(knowledge, pathKey, SCOPE_FULL, servedHash, seq);
+		return;
+	}
+
+	if (mode === "unchanged_range" && scopeKey !== SCOPE_FULL) {
+		if (!baseHash) {
+			return;
+		}
+		if (rangeTrust?.hash !== baseHash && fullTrust?.hash !== baseHash) {
+			return;
+		}
+		setTrust(knowledge, pathKey, scopeKey, servedHash, seq);
+	}
 }
 
 export function applyInvalidation(knowledge: KnowledgeMap, invalidation: ReadCacheInvalidationV1): void {
@@ -142,6 +203,7 @@ export function applyInvalidation(knowledge: KnowledgeMap, invalidation: ReadCac
 export function replayKnowledgeFromBranch(branchEntries: SessionEntry[], startIndex: number): KnowledgeMap {
 	const knowledge: KnowledgeMap = new Map();
 	const normalizedStart = Math.max(0, Math.min(startIndex, branchEntries.length));
+	let seq = 0;
 
 	for (let index = normalizedStart; index < branchEntries.length; index += 1) {
 		const entry = branchEntries[index];
@@ -151,7 +213,8 @@ export function replayKnowledgeFromBranch(branchEntries: SessionEntry[], startIn
 
 		const meta = extractReadMetaFromSessionEntry(entry);
 		if (meta) {
-			applyReadMeta(knowledge, meta);
+			seq += 1;
+			applyReadMetaTransition(knowledge, meta, seq);
 			continue;
 		}
 
@@ -197,5 +260,7 @@ export function overlaySet(
 	const sessionId = sessionManager.getSessionId();
 	const leafId = sessionManager.getLeafId();
 	const overlayState = ensureOverlayForLeaf(runtimeState, sessionId, leafId);
-	setKnowledgeHash(overlayState.knowledge, pathKey, scopeKey, servedHash);
+	const seq = runtimeState.nextOverlaySeq;
+	runtimeState.nextOverlaySeq += 1;
+	setTrust(overlayState.knowledge, pathKey, scopeKey, servedHash, seq);
 }
