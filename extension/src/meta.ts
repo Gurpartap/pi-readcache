@@ -12,6 +12,10 @@ function isPositiveInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
+function isNonNegativeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 function isReadCacheMode(value: unknown): value is ReadCacheMode {
 	return (
 		value === "full" ||
@@ -80,7 +84,7 @@ export function isReadCacheMetaV1(value: unknown): value is ReadCacheMetaV1 {
 		isPositiveInteger(value.rangeStart) &&
 		isPositiveInteger(value.rangeEnd) &&
 		value.rangeEnd >= value.rangeStart &&
-		isPositiveInteger(value.bytes)
+		isNonNegativeInteger(value.bytes)
 	);
 }
 
