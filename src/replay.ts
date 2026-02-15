@@ -6,12 +6,20 @@ import type {
 	ReadCacheInvalidationV1,
 	ReadCacheMetaV1,
 	ScopeKey,
+	ScopeRangeKey,
 	ScopeTrust,
 } from "./types.js";
 
 type SessionManagerView = ExtensionContext["sessionManager"];
 
+type RangeBlockersByPath = Map<string, Set<ScopeRangeKey>>;
+
 const OVERLAY_SEQ_START = 1_000_000_000;
+
+interface ReplayMemoEntry {
+	knowledge: KnowledgeMap;
+	blockedRangesByPath: RangeBlockersByPath;
+}
 
 interface OverlayState {
 	leafId: string | null;
@@ -19,7 +27,7 @@ interface OverlayState {
 }
 
 export interface ReplayRuntimeState {
-	memoByLeaf: Map<string, KnowledgeMap>;
+	memoByLeaf: Map<string, ReplayMemoEntry>;
 	overlayBySession: Map<string, OverlayState>;
 	nextOverlaySeq: number;
 }
@@ -41,6 +49,21 @@ function cloneKnowledgeMap(source: KnowledgeMap): KnowledgeMap {
 	return cloned;
 }
 
+function cloneRangeBlockersByPath(source: RangeBlockersByPath): RangeBlockersByPath {
+	const cloned: RangeBlockersByPath = new Map();
+	for (const [pathKey, scopes] of source.entries()) {
+		cloned.set(pathKey, new Set(scopes));
+	}
+	return cloned;
+}
+
+function cloneReplayMemoEntry(source: ReplayMemoEntry): ReplayMemoEntry {
+	return {
+		knowledge: cloneKnowledgeMap(source.knowledge),
+		blockedRangesByPath: cloneRangeBlockersByPath(source.blockedRangesByPath),
+	};
+}
+
 function getMemoKey(sessionId: string, leafId: string | null, boundaryKey: string): string {
 	return `${sessionId}:${leafId ?? "null"}:${boundaryKey}`;
 }
@@ -53,6 +76,36 @@ function ensureScopeMap(knowledge: KnowledgeMap, pathKey: string): Map<ScopeKey,
 	const created = new Map<ScopeKey, ScopeTrust>();
 	knowledge.set(pathKey, created);
 	return created;
+}
+
+function isRangeScope(scopeKey: ScopeKey): scopeKey is ScopeRangeKey {
+	return scopeKey !== SCOPE_FULL;
+}
+
+function ensureRangeBlockerSet(blockedRangesByPath: RangeBlockersByPath, pathKey: string): Set<ScopeRangeKey> {
+	const existing = blockedRangesByPath.get(pathKey);
+	if (existing) {
+		return existing;
+	}
+	const created = new Set<ScopeRangeKey>();
+	blockedRangesByPath.set(pathKey, created);
+	return created;
+}
+
+function setRangeBlocker(blockedRangesByPath: RangeBlockersByPath, pathKey: string, scopeKey: ScopeRangeKey): void {
+	const scopes = ensureRangeBlockerSet(blockedRangesByPath, pathKey);
+	scopes.add(scopeKey);
+}
+
+function clearRangeBlocker(blockedRangesByPath: RangeBlockersByPath, pathKey: string, scopeKey: ScopeRangeKey): void {
+	const scopes = blockedRangesByPath.get(pathKey);
+	if (!scopes) {
+		return;
+	}
+	scopes.delete(scopeKey);
+	if (scopes.size === 0) {
+		blockedRangesByPath.delete(pathKey);
+	}
 }
 
 export function getTrust(knowledge: KnowledgeMap, pathKey: string, scopeKey: ScopeKey): ScopeTrust | undefined {
@@ -95,6 +148,61 @@ function leafHasChildren(sessionManager: SessionManagerView, leafId: string | nu
 	return sessionManager.getEntries().some((entry) => entry.parentId === leafId);
 }
 
+function replaySnapshotFromBranch(branchEntries: SessionEntry[], startIndex: number): ReplayMemoEntry {
+	const knowledge: KnowledgeMap = new Map();
+	const blockedRangesByPath: RangeBlockersByPath = new Map();
+	const normalizedStart = Math.max(0, Math.min(startIndex, branchEntries.length));
+	let seq = 0;
+
+	for (let index = normalizedStart; index < branchEntries.length; index += 1) {
+		const entry = branchEntries[index];
+		if (!entry) {
+			continue;
+		}
+
+		const meta = extractReadMetaFromSessionEntry(entry);
+		if (meta) {
+			seq += 1;
+			applyReadMetaTransition(knowledge, meta, seq, blockedRangesByPath);
+			continue;
+		}
+
+		const invalidation = extractInvalidationFromSessionEntry(entry);
+		if (invalidation) {
+			applyInvalidation(knowledge, invalidation, blockedRangesByPath);
+		}
+	}
+
+	return {
+		knowledge,
+		blockedRangesByPath,
+	};
+}
+
+function getReplayMemoEntryForLeaf(
+	sessionManager: SessionManagerView,
+	runtimeState: ReplayRuntimeState,
+): { memoEntry: ReplayMemoEntry; sessionId: string; leafId: string | null } {
+	const sessionId = sessionManager.getSessionId();
+	const leafId = sessionManager.getLeafId();
+	const branchEntries = sessionManager.getBranch();
+	const boundary = findReplayStartIndex(branchEntries);
+	const memoKey = getMemoKey(sessionId, leafId, boundary.boundaryKey);
+
+	let memoEntry = runtimeState.memoByLeaf.get(memoKey);
+	if (!memoEntry) {
+		const replayMemo = replaySnapshotFromBranch(branchEntries, boundary.startIndex);
+		memoEntry = cloneReplayMemoEntry(replayMemo);
+		runtimeState.memoByLeaf.set(memoKey, memoEntry);
+	}
+
+	return {
+		memoEntry,
+		sessionId,
+		leafId,
+	};
+}
+
 export function createReplayRuntimeState(): ReplayRuntimeState {
 	return {
 		memoByLeaf: new Map(),
@@ -128,13 +236,21 @@ export function findReplayStartIndex(branchEntries: SessionEntry[]): ReplayBound
 	};
 }
 
-export function applyReadMetaTransition(knowledge: KnowledgeMap, meta: ReadCacheMetaV1, seq: number): void {
+export function applyReadMetaTransition(
+	knowledge: KnowledgeMap,
+	meta: ReadCacheMetaV1,
+	seq: number,
+	blockedRangesByPath?: RangeBlockersByPath,
+): void {
 	const { pathKey, scopeKey, servedHash, baseHash, mode } = meta;
 	const fullTrust = getTrust(knowledge, pathKey, SCOPE_FULL);
 	const rangeTrust = scopeKey === SCOPE_FULL ? undefined : getTrust(knowledge, pathKey, scopeKey);
 
 	if (mode === "full" || mode === "full_fallback") {
 		setTrust(knowledge, pathKey, scopeKey, servedHash, seq);
+		if (blockedRangesByPath && isRangeScope(scopeKey)) {
+			clearRangeBlocker(blockedRangesByPath, pathKey, scopeKey);
+		}
 		return;
 	}
 
@@ -174,14 +290,24 @@ export function applyReadMetaTransition(knowledge: KnowledgeMap, meta: ReadCache
 	}
 }
 
-export function applyInvalidation(knowledge: KnowledgeMap, invalidation: ReadCacheInvalidationV1): void {
+export function applyInvalidation(
+	knowledge: KnowledgeMap,
+	invalidation: ReadCacheInvalidationV1,
+	blockedRangesByPath?: RangeBlockersByPath,
+): void {
 	const scopes = knowledge.get(invalidation.pathKey);
-	if (!scopes) {
-		return;
-	}
 
 	if (invalidation.scopeKey === SCOPE_FULL) {
 		knowledge.delete(invalidation.pathKey);
+		blockedRangesByPath?.delete(invalidation.pathKey);
+		return;
+	}
+
+	if (blockedRangesByPath && isRangeScope(invalidation.scopeKey)) {
+		setRangeBlocker(blockedRangesByPath, invalidation.pathKey, invalidation.scopeKey);
+	}
+
+	if (!scopes) {
 		return;
 	}
 
@@ -192,53 +318,40 @@ export function applyInvalidation(knowledge: KnowledgeMap, invalidation: ReadCac
 }
 
 export function replayKnowledgeFromBranch(branchEntries: SessionEntry[], startIndex: number): KnowledgeMap {
-	const knowledge: KnowledgeMap = new Map();
-	const normalizedStart = Math.max(0, Math.min(startIndex, branchEntries.length));
-	let seq = 0;
-
-	for (let index = normalizedStart; index < branchEntries.length; index += 1) {
-		const entry = branchEntries[index];
-		if (!entry) {
-			continue;
-		}
-
-		const meta = extractReadMetaFromSessionEntry(entry);
-		if (meta) {
-			seq += 1;
-			applyReadMetaTransition(knowledge, meta, seq);
-			continue;
-		}
-
-		const invalidation = extractInvalidationFromSessionEntry(entry);
-		if (invalidation) {
-			applyInvalidation(knowledge, invalidation);
-		}
-	}
-
-	return knowledge;
+	return replaySnapshotFromBranch(branchEntries, startIndex).knowledge;
 }
 
 export function buildKnowledgeForLeaf(
 	sessionManager: SessionManagerView,
 	runtimeState: ReplayRuntimeState,
 ): KnowledgeMap {
-	const sessionId = sessionManager.getSessionId();
-	const leafId = sessionManager.getLeafId();
-	const branchEntries = sessionManager.getBranch();
-	const boundary = findReplayStartIndex(branchEntries);
-	const memoKey = getMemoKey(sessionId, leafId, boundary.boundaryKey);
-
-	let replayKnowledge = runtimeState.memoByLeaf.get(memoKey);
-	if (!replayKnowledge) {
-		replayKnowledge = replayKnowledgeFromBranch(branchEntries, boundary.startIndex);
-		runtimeState.memoByLeaf.set(memoKey, cloneKnowledgeMap(replayKnowledge));
-	}
-
+	const { memoEntry, sessionId, leafId } = getReplayMemoEntryForLeaf(sessionManager, runtimeState);
 	const overlayState = ensureOverlayForLeaf(runtimeState, sessionId, leafId);
 	if (leafHasChildren(sessionManager, leafId)) {
 		overlayState.knowledge.clear();
 	}
-	return mergeKnowledge(replayKnowledge, overlayState.knowledge);
+	return mergeKnowledge(memoEntry.knowledge, overlayState.knowledge);
+}
+
+export function isRangeScopeBlockedByInvalidation(
+	sessionManager: SessionManagerView,
+	runtimeState: ReplayRuntimeState,
+	pathKey: string,
+	scopeKey: ScopeKey,
+): boolean {
+	if (!isRangeScope(scopeKey)) {
+		return false;
+	}
+
+	const { memoEntry, sessionId, leafId } = getReplayMemoEntryForLeaf(sessionManager, runtimeState);
+	const blockedScopes = memoEntry.blockedRangesByPath.get(pathKey);
+	if (!blockedScopes?.has(scopeKey)) {
+		return false;
+	}
+
+	const overlayState = ensureOverlayForLeaf(runtimeState, sessionId, leafId);
+	const overlayScopeTrust = overlayState.knowledge.get(pathKey)?.get(scopeKey);
+	return overlayScopeTrust === undefined;
 }
 
 export function overlaySet(

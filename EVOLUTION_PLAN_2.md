@@ -51,7 +51,7 @@ This is branch-local and compaction-local:
 
 ## Code Changes (exact)
 
-## 1) `extension/src/replay.ts`
+## 1) `src/replay.ts`
 
 ### Change
 Update `findReplayStartIndex(branchEntries)`:
@@ -70,19 +70,19 @@ return { startIndex: 0, boundaryKey: "root" };
 - Keep boundary key stable for memo cache behavior.
 - Keep trust transition engine untouched (anchor/derived guards still required).
 
-## 2) `extension/src/telemetry.ts`
+## 2) `src/telemetry.ts`
 
 ### Change
 No logic changes expected except behavior naturally follows updated boundary.
 Confirm replay window count is computed from new start index.
 
-## 3) `extension/src/tool.ts`
+## 3) `src/tool.ts`
 
 ### Change
 No algorithmic changes needed if replay boundary is fixed.
 Verify first post-compaction read resolves no base and returns baseline output.
 
-## 4) `extension/src/commands.ts`
+## 4) `src/commands.ts`
 
 ### Change
 No logic change required.
@@ -171,7 +171,7 @@ Update sections:
 
 ## Required Verification Commands
 
-From `extension/`:
+From repo root:
 
 1. `npm run typecheck`
 2. `npm test -- test/unit/replay.test.ts`

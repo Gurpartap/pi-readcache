@@ -17,7 +17,7 @@ when the model no longer has a proven base in active context.
 
 ### 1.2 Root cause in current code
 
-Current `extension/src/replay.ts` applies read metadata unconditionally:
+Current `src/replay.ts` applies read metadata unconditionally:
 - `applyReadMeta(...)` always writes `knowledge[path][scope] = servedHash`
 - this includes modes: `unchanged`, `unchanged_range`, `diff`
 
@@ -173,7 +173,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ## 8) File-by-file migration tasks
 
-## 8.1 `extension/src/types.ts`
+## 8.1 `src/types.ts`
 
 ### Changes
 1. Add `ScopeTrust` type `{ hash: string; seq: number }`.
@@ -188,7 +188,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ---
 
-## 8.2 `extension/src/replay.ts`
+## 8.2 `src/replay.ts`
 
 ### Changes
 1. Replace unconditional `applyReadMeta` with guarded transition function:
@@ -208,7 +208,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ---
 
-## 8.3 `extension/src/tool.ts`
+## 8.3 `src/tool.ts`
 
 ### Changes
 1. Update base selection logic for range scope to choose freshest trust by `seq`.
@@ -221,7 +221,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ---
 
-## 8.4 `extension/src/meta.ts`
+## 8.4 `src/meta.ts`
 
 ### Changes
 1. Strengthen validation:
@@ -234,7 +234,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ---
 
-## 8.5 `extension/src/telemetry.ts`
+## 8.5 `src/telemetry.ts`
 
 ### Changes
 1. Adjust `summarizeKnowledge` iteration for trust objects.
@@ -242,7 +242,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ---
 
-## 8.6 `extension/src/commands.ts`
+## 8.6 `src/commands.ts`
 
 ### Changes
 - No semantic changes required.
@@ -250,7 +250,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 
 ---
 
-## 8.7 `extension/index.ts`
+## 8.7 `index.ts`
 
 ### Changes
 - No semantic change required.
@@ -320,7 +320,7 @@ Scenario:
 
 ## 11) Verification commands
 
-From `extension/`:
+From repo root:
 
 1. `npm run typecheck`
 2. `npm test -- test/unit/replay.test.ts`

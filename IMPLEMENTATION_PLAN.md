@@ -39,42 +39,41 @@ Create this structure:
 pi-readcache/
   IMPLEMENTATION_SPEC.md
   IMPLEMENTATION_PLAN.md
-  extension/
-    package.json
-    tsconfig.json
-    index.ts
-    src/
-      constants.ts
-      types.ts
-      meta.ts
-      path.ts
-      text.ts
-      object-store.ts
-      replay.ts
-      diff.ts
-      tool.ts
-      commands.ts
-      telemetry.ts
-    test/
-      unit/
-        path.test.ts
-        replay.test.ts
-        diff.test.ts
-        meta.test.ts
-        text.test.ts
-      integration/
-        tree-navigation.test.ts
-        compaction-boundary.test.ts
-        selective-range.test.ts
-        refresh-invalidation.test.ts
-        restart-resume.test.ts
+  package.json
+  tsconfig.json
+  index.ts
+  src/
+    constants.ts
+    types.ts
+    meta.ts
+    path.ts
+    text.ts
+    object-store.ts
+    replay.ts
+    diff.ts
+    tool.ts
+    commands.ts
+    telemetry.ts
+  test/
+    unit/
+      path.test.ts
+      replay.test.ts
+      diff.test.ts
+      meta.test.ts
+      text.test.ts
+    integration/
+      tree-navigation.test.ts
+      compaction-boundary.test.ts
+      selective-range.test.ts
+      refresh-invalidation.test.ts
+      restart-resume.test.ts
 ```
 
 ---
 
 ## 3) Tooling and dependencies
 
-## 3.1 package.json (extension)
+## 3.1 package.json (repo root)
 
 Dependencies:
 - `@mariozechner/pi-coding-agent`

@@ -20,7 +20,13 @@ import { computeUnifiedDiff, isDiffUseful } from "./diff.js";
 import { buildReadCacheMetaV1 } from "./meta.js";
 import { hashBytes, loadObject, persistObjectIfAbsent } from "./object-store.js";
 import { normalizeOffsetLimit, parseTrailingRangeIfNeeded, scopeKeyForRange } from "./path.js";
-import { buildKnowledgeForLeaf, createReplayRuntimeState, overlaySet, type ReplayRuntimeState } from "./replay.js";
+import {
+	buildKnowledgeForLeaf,
+	createReplayRuntimeState,
+	isRangeScopeBlockedByInvalidation,
+	overlaySet,
+	type ReplayRuntimeState,
+} from "./replay.js";
 import { compareSlices, splitLines, truncateForReadcache } from "./text.js";
 import type {
 	ReadCacheDebugReason,
@@ -161,13 +167,21 @@ function buildDebugInfo(
 	};
 }
 
-function selectBaseTrust(pathKnowledge: Map<ScopeKey, ScopeTrust> | undefined, scopeKey: ScopeKey): ScopeTrust | undefined {
+function selectBaseTrust(
+	pathKnowledge: Map<ScopeKey, ScopeTrust> | undefined,
+	scopeKey: ScopeKey,
+	rangeScopeBlocked: boolean,
+): ScopeTrust | undefined {
 	if (!pathKnowledge) {
 		return undefined;
 	}
 
 	if (scopeKey === SCOPE_FULL) {
 		return pathKnowledge.get(SCOPE_FULL);
+	}
+
+	if (rangeScopeBlocked) {
+		return undefined;
 	}
 
 	const exactTrust = pathKnowledge.get(scopeKey);
@@ -290,7 +304,13 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 			const scopeKey = scopeKeyForRange(start, end, totalLines);
 			const knowledge = buildKnowledgeForLeaf(ctx.sessionManager, runtimeState);
 			const pathKnowledge = knowledge.get(pathKey);
-			const baseHash = selectBaseTrust(pathKnowledge, scopeKey)?.hash;
+			const rangeScopeBlocked = isRangeScopeBlockedByInvalidation(
+				ctx.sessionManager,
+				runtimeState,
+				pathKey,
+				scopeKey,
+			);
+			const baseHash = selectBaseTrust(pathKnowledge, scopeKey, rangeScopeBlocked)?.hash;
 
 			if (!baseHash) {
 				const meta = buildReadcacheMeta(

@@ -680,17 +680,16 @@ Use this when the model explicitly needs a fresh baseline for a file/scope.
 ## 19) Implementation modules
 
 ```text
-extension/
-  index.ts                  // register tool + commands + invalidation hooks
-  src/
-    tool.ts                 // execute algorithm
-    replay.ts               // branch replay and knowledge map
-    path.ts                 // path/range normalization parity
-    text.ts                 // slicing, truncation helpers
-    diff.ts                 // full-file diff generation
-    object-store.ts         // hash object store IO
-    meta.ts                 // metadata schema parse/encode
-    types.ts
+index.ts                    // register tool + commands + invalidation hooks
+src/
+  tool.ts                   // execute algorithm
+  replay.ts                 // branch replay and knowledge map
+  path.ts                   // path/range normalization parity
+  text.ts                   // slicing, truncation helpers
+  diff.ts                   // full-file diff generation
+  object-store.ts           // hash object store IO
+  meta.ts                   // metadata schema parse/encode
+  types.ts
 ```
 
 ---

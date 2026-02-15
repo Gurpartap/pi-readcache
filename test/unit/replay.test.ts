@@ -8,6 +8,7 @@ import {
 	buildKnowledgeForLeaf,
 	createReplayRuntimeState,
 	findReplayStartIndex,
+	isRangeScopeBlockedByInvalidation,
 	overlaySet,
 	replayKnowledgeFromBranch,
 } from "../../src/replay.js";
@@ -323,6 +324,42 @@ describe("replay", () => {
 		applyInvalidation(knowledge, buildInvalidationV1(path, scope, Date.now()));
 		expect(knowledge.get(path)?.get(scope)).toBeUndefined();
 		expect(knowledge.get(path)?.get(SCOPE_FULL)).toEqual({ hash: "a".repeat(64), seq: 1 });
+	});
+
+	it("range_scope_blocker_persists_until_range_anchor", () => {
+		const path = "/tmp/file.txt";
+		const scope = "r:2:4" as const;
+		const runtime = createReplayRuntimeState();
+		const state: { sessionId: string; leafId: string | null; branch: SessionEntry[] } = {
+			sessionId: "session-1",
+			leafId: "e2",
+			branch: [
+				createReadEntry(
+					"e1",
+					null,
+					createMeta({ pathKey: path, scopeKey: SCOPE_FULL, servedHash: "a".repeat(64), mode: "full" }),
+				),
+				createInvalidationEntry("e2", "e1", path, scope),
+			],
+		};
+		const sessionManager = createSessionManagerStub(state);
+
+		expect(isRangeScopeBlockedByInvalidation(sessionManager, runtime, path, scope)).toBe(true);
+
+		overlaySet(runtime, sessionManager, path, scope, "b".repeat(64));
+		expect(isRangeScopeBlockedByInvalidation(sessionManager, runtime, path, scope)).toBe(false);
+
+		state.leafId = "e3";
+		state.branch = [
+			...state.branch,
+			createReadEntry(
+				"e3",
+				"e2",
+				createMeta({ pathKey: path, scopeKey: scope, servedHash: "b".repeat(64), mode: "full", rangeStart: 2, rangeEnd: 4 }),
+			),
+		];
+
+		expect(isRangeScopeBlockedByInvalidation(sessionManager, runtime, path, scope)).toBe(false);
 	});
 
 	it("replays read metadata with guarded transitions and invalidations", () => {

@@ -1,7 +1,8 @@
 # 🧠 pi-readcache
 
 [![pi coding agent](https://img.shields.io/badge/pi-coding%20agent-6f6bff?logo=terminal&logoColor=white)](https://pi.dev/)
-[![license](https://img.shields.io/npm/l/pi-mermaid.svg)](LICENSE)
+[![npm version](https://img.shields.io/npm/v/pi-readcache.svg)](https://www.npmjs.com/package/pi-readcache)
+[![license](https://img.shields.io/npm/l/pi-readcache.svg)](LICENSE)
 
 A pi extension that overrides the built-in `read` tool with hash-based, replay-aware caching.
 
@@ -127,15 +128,15 @@ Rules:
 
 ## File map
 
-- `extension/index.ts` - extension entrypoint + lifecycle reset hooks
-- `extension/src/tool.ts` - `read` override decision engine
-- `extension/src/replay.ts` - replay reconstruction, trust transitions, overlay
-- `extension/src/meta.ts` - metadata/invalidation validators and extractors
-- `extension/src/commands.ts` - `/readcache-status`, `/readcache-refresh`, `readcache_refresh`
-- `extension/src/object-store.ts` - content-addressed storage (`.pi/readcache/objects`)
-- `extension/src/diff.ts` - unified diff creation + usefulness gating
-- `extension/src/path.ts` - path/range parsing and normalization
-- `extension/src/telemetry.ts` - replay window/mode/savings reporting
+- `index.ts` - extension entrypoint + lifecycle reset hooks
+- `src/tool.ts` - `read` override decision engine
+- `src/replay.ts` - replay reconstruction, trust transitions, overlay
+- `src/meta.ts` - metadata/invalidation validators and extractors
+- `src/commands.ts` - `/readcache-status`, `/readcache-refresh`, `readcache_refresh`
+- `src/object-store.ts` - content-addressed storage (`.pi/readcache/objects`)
+- `src/diff.ts` - unified diff creation + usefulness gating
+- `src/path.ts` - path/range parsing and normalization
+- `src/telemetry.ts` - replay window/mode/savings reporting
 
 ## Tool-override compatibility contract
 
@@ -147,7 +148,6 @@ Because this overrides built-in `read`, it must preserve:
 ## Development
 
 ```bash
-cd extension
 npm install
 npm run typecheck
 npm test
