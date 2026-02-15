@@ -1,6 +1,12 @@
 import type { SessionEntry } from "@mariozechner/pi-coding-agent";
 import { READCACHE_CUSTOM_TYPE, READCACHE_META_VERSION, SCOPE_FULL } from "./constants.js";
-import type { ReadCacheInvalidationV1, ReadCacheMetaV1, ReadCacheMode, ScopeKey } from "./types.js";
+import type {
+	ReadCacheDebugV1,
+	ReadCacheInvalidationV1,
+	ReadCacheMetaV1,
+	ReadCacheMode,
+	ScopeKey,
+} from "./types.js";
 
 const RANGE_SCOPE_RE = /^r:(\d+):(\d+)$/;
 
@@ -23,6 +29,61 @@ function isReadCacheMode(value: unknown): value is ReadCacheMode {
 		value === "unchanged_range" ||
 		value === "diff" ||
 		value === "full_fallback"
+	);
+}
+
+function isReadCacheDebugReason(value: unknown): value is ReadCacheDebugV1["reason"] {
+	return (
+		value === "no_base_hash" ||
+		value === "hash_match" ||
+		value === "base_object_missing" ||
+		value === "range_slice_unchanged" ||
+		value === "range_slice_changed" ||
+		value === "diff_file_too_large_bytes" ||
+		value === "diff_file_too_large_lines" ||
+		value === "diff_unavailable_or_empty" ||
+		value === "diff_not_useful" ||
+		value === "diff_payload_truncated" ||
+		value === "diff_emitted"
+	);
+}
+
+function isOptionalBoolean(value: unknown): value is boolean | undefined {
+	return value === undefined || typeof value === "boolean";
+}
+
+function isOptionalPositiveInteger(value: unknown): value is number | undefined {
+	return value === undefined || isPositiveInteger(value);
+}
+
+function isOptionalNonNegativeInteger(value: unknown): value is number | undefined {
+	return value === undefined || isNonNegativeInteger(value);
+}
+
+function isReadCacheDebugV1(value: unknown): value is ReadCacheDebugV1 {
+	if (!isRecord(value)) {
+		return false;
+	}
+
+	if (!isReadCacheDebugReason(value.reason)) {
+		return false;
+	}
+
+	if (value.scope !== "full" && value.scope !== "range") {
+		return false;
+	}
+
+	if (typeof value.baseHashFound !== "boolean" || typeof value.diffAttempted !== "boolean") {
+		return false;
+	}
+
+	return (
+		isOptionalBoolean(value.outsideRangeChanged) &&
+		isOptionalBoolean(value.baseObjectFound) &&
+		isOptionalPositiveInteger(value.largestBytes) &&
+		isOptionalPositiveInteger(value.maxLines) &&
+		isOptionalNonNegativeInteger(value.diffBytes) &&
+		isOptionalNonNegativeInteger(value.diffChangedLines)
 	);
 }
 
@@ -89,7 +150,8 @@ export function isReadCacheMetaV1(value: unknown): value is ReadCacheMetaV1 {
 		isPositiveInteger(value.rangeStart) &&
 		isPositiveInteger(value.rangeEnd) &&
 		value.rangeEnd >= value.rangeStart &&
-		isNonNegativeInteger(value.bytes)
+		isNonNegativeInteger(value.bytes) &&
+		(value.debug === undefined || isReadCacheDebugV1(value.debug))
 	);
 }
 

@@ -27,6 +27,7 @@ describe("index extension wiring", () => {
 		expect(registeredCommands).toContain("readcache-status");
 		expect(registeredCommands).toContain("readcache-refresh");
 
+		expect(eventHandlers.has("session_start")).toBe(true);
 		expect(eventHandlers.has("session_compact")).toBe(true);
 		expect(eventHandlers.has("session_tree")).toBe(true);
 		expect(eventHandlers.has("session_fork")).toBe(true);

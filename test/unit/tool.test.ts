@@ -81,6 +81,13 @@ describe("tool", () => {
 		const diffText = secondRead.content[0] && secondRead.content[0].type === "text" ? secondRead.content[0].text : "";
 
 		expect(secondRead.details?.readcache?.mode).toBe("diff");
+		expect(secondRead.details?.readcache?.debug).toMatchObject({
+			reason: "diff_emitted",
+			scope: "full",
+			baseHashFound: true,
+			diffAttempted: true,
+			diffChangedLines: 1,
+		});
 		expect(diffText).toContain("[readcache: 1 lines changed of 300]");
 		expect(diffText).toContain("--- a/sample.txt");
 		expect(diffText).toContain("+++ b/sample.txt");
@@ -104,18 +111,29 @@ describe("tool", () => {
 		await writeFile(filePath, `b${large.slice(1)}`, "utf-8");
 		const secondRead = await tool.execute("call-6", { path: "sample.txt" }, undefined, undefined, ctx);
 		expect(secondRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(secondRead.details?.readcache?.debug).toMatchObject({
+			reason: "diff_file_too_large_bytes",
+			scope: "full",
+			baseHashFound: true,
+			diffAttempted: true,
+		});
 	});
 
 	it("bypasses readcache metadata for excluded sensitive paths", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
-		await writeFile(join(cwd, ".env.local"), "SECRET_TOKEN=123", "utf-8");
+		const paths = [".env.local", "server.key", ".npmrc", "id_ed25519"];
+		for (const path of paths) {
+			await writeFile(join(cwd, path), `sensitive:${path}`, "utf-8");
+		}
 
 		const tool = createReadOverrideTool();
 		const sessionManager = SessionManager.inMemory(cwd);
 		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
-		const result = await tool.execute("call-7", { path: ".env.local" }, undefined, undefined, ctx);
 
-		expect(result.details?.readcache).toBeUndefined();
+		for (const path of paths) {
+			const result = await tool.execute(`call-7-${path}`, { path }, undefined, undefined, ctx);
+			expect(result.details?.readcache).toBeUndefined();
+		}
 	});
 
 	it("falls back to baseline for non-UTF8 file payloads", async () => {

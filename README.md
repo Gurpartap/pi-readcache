@@ -58,6 +58,7 @@ After installation, you can use pi normally. If pi is already running when you i
 
 ## Important behavior notes
 
+- Sensitive-path bypass: readcache does not cache/diff these patterns and falls back to baseline `read` output: `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.crt`, `*.cer`, `*.der`, `*.pk8`, `id_rsa`, `id_ed25519`, `.npmrc`, `.netrc`.
 - Compaction is a strict replay barrier for trust reconstruction:
   - replay starts at the latest active `compaction + 1`.
   - pre-compaction trust is not used after that barrier.

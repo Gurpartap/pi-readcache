@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, open, readdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { READCACHE_OBJECTS_DIR, READCACHE_TMP_DIR } from "./constants.js";
+import { READCACHE_OBJECT_MAX_AGE_MS, READCACHE_OBJECTS_DIR, READCACHE_TMP_DIR } from "./constants.js";
 
 const HASH_HEX_RE = /^[a-f0-9]{64}$/;
 
@@ -22,10 +22,20 @@ export interface ObjectStoreStats {
 	bytes: number;
 }
 
+export interface PruneObjectsResult {
+	scanned: number;
+	deleted: number;
+	cutoffMs: number;
+}
+
 function ensureValidHash(hash: string): void {
 	if (!HASH_HEX_RE.test(hash)) {
 		throw new Error(`Invalid sha256 hash "${hash}".`);
 	}
+}
+
+function isObjectFileName(name: string): boolean {
+	return name.startsWith("sha256-") && name.endsWith(".txt");
 }
 
 export function hashBytes(buffer: Buffer): string {
@@ -126,7 +136,7 @@ export async function getStoreStats(repoRoot: string): Promise<ObjectStoreStats>
 	let bytes = 0;
 
 	for (const entry of entries) {
-		if (!entry.isFile() || !entry.name.startsWith("sha256-") || !entry.name.endsWith(".txt")) {
+		if (!entry.isFile() || !isObjectFileName(entry.name)) {
 			continue;
 		}
 		objects += 1;
@@ -135,4 +145,46 @@ export async function getStoreStats(repoRoot: string): Promise<ObjectStoreStats>
 	}
 
 	return { objects, bytes };
+}
+
+export async function pruneObjectsOlderThan(
+	repoRoot: string,
+	maxAgeMs = READCACHE_OBJECT_MAX_AGE_MS,
+	nowMs = Date.now(),
+): Promise<PruneObjectsResult> {
+	if (!Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
+		throw new Error(`Invalid maxAgeMs "${String(maxAgeMs)}".`);
+	}
+
+	const { objectsDir } = await ensureStoreDirs(repoRoot);
+	const entries = await readdir(objectsDir, { withFileTypes: true });
+	const cutoffMs = nowMs - maxAgeMs;
+
+	let scanned = 0;
+	let deleted = 0;
+
+	for (const entry of entries) {
+		if (!entry.isFile() || !isObjectFileName(entry.name)) {
+			continue;
+		}
+		scanned += 1;
+		const filePath = join(objectsDir, entry.name);
+		let info;
+		try {
+			info = await stat(filePath);
+		} catch {
+			continue;
+		}
+		if (info.mtimeMs > cutoffMs) {
+			continue;
+		}
+		try {
+			await unlink(filePath);
+			deleted += 1;
+		} catch {
+			// Fail-open: stale-object pruning must not break extension startup.
+		}
+	}
+
+	return { scanned, deleted, cutoffMs };
 }

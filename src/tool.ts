@@ -22,7 +22,14 @@ import { hashBytes, loadObject, persistObjectIfAbsent } from "./object-store.js"
 import { normalizeOffsetLimit, parseTrailingRangeIfNeeded, scopeKeyForRange } from "./path.js";
 import { buildKnowledgeForLeaf, createReplayRuntimeState, overlaySet, type ReplayRuntimeState } from "./replay.js";
 import { compareSlices, splitLines, truncateForReadcache } from "./text.js";
-import type { ReadCacheMetaV1, ReadToolDetailsExt, ScopeKey, ScopeTrust } from "./types.js";
+import type {
+	ReadCacheDebugReason,
+	ReadCacheDebugV1,
+	ReadCacheMetaV1,
+	ReadToolDetailsExt,
+	ScopeKey,
+	ScopeTrust,
+} from "./types.js";
 
 const UTF8_STRICT_DECODER = new TextDecoder("utf-8", { fatal: true });
 
@@ -42,7 +49,7 @@ export const readToolSchema = Type.Object({
 export type ReadToolParams = Static<typeof readToolSchema>;
 
 function buildReadDescription(): string {
-	return `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`;
+	return `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Returns full text, unchanged marker, or unified diff. Treat output as authoritative for requested scope. Use readcache_refresh only when output is insufficient for correctness; it forces full baseline payload for file and increases repeated-read context usage.`;
 }
 
 function hasImageContent(result: AgentToolResult<ReadToolDetails | undefined>): boolean {
@@ -121,6 +128,7 @@ function buildReadcacheMeta(
 	rangeEnd: number,
 	bytes: number,
 	baseHash?: string,
+	debug?: ReadCacheDebugV1,
 ): ReadCacheMetaV1 {
 	return buildReadCacheMetaV1({
 		pathKey,
@@ -132,7 +140,25 @@ function buildReadcacheMeta(
 		rangeStart,
 		rangeEnd,
 		bytes,
+		...(debug !== undefined ? { debug } : {}),
 	});
+}
+
+function buildDebugInfo(
+	scopeKey: ScopeKey,
+	baseHash: string | undefined,
+	reason: ReadCacheDebugReason,
+	overrides: Partial<Omit<ReadCacheDebugV1, "reason" | "scope" | "baseHashFound" | "diffAttempted">> & {
+		diffAttempted?: boolean;
+	} = {},
+): ReadCacheDebugV1 {
+	return {
+		reason,
+		scope: scopeKey === SCOPE_FULL ? "full" : "range",
+		baseHashFound: baseHash !== undefined,
+		diffAttempted: overrides.diffAttempted ?? false,
+		...overrides,
+	};
 }
 
 function selectBaseTrust(pathKnowledge: Map<ScopeKey, ScopeTrust> | undefined, scopeKey: ScopeKey): ScopeTrust | undefined {
@@ -276,6 +302,8 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 					start,
 					end,
 					current.bytes.byteLength,
+					undefined,
+					buildDebugInfo(scopeKey, baseHash, "no_base_hash"),
 				);
 				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
 				return attachMetaToBaseline(baselineResult, meta);
@@ -293,6 +321,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 					end,
 					current.bytes.byteLength,
 					baseHash,
+					buildDebugInfo(scopeKey, baseHash, "hash_match"),
 				);
 				const marker = buildUnchangedMarker(scopeKey, start, end, totalLines, false);
 				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
@@ -306,7 +335,12 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				baseText = undefined;
 			}
 
-			const fallbackResult = async (): Promise<AgentToolResult<ReadToolDetailsExt | undefined>> => {
+			const fallbackResult = async (
+				reason: ReadCacheDebugReason,
+				overrides: Partial<Omit<ReadCacheDebugV1, "reason" | "scope" | "baseHashFound" | "diffAttempted">> & {
+					diffAttempted?: boolean;
+				} = {},
+			): Promise<AgentToolResult<ReadToolDetailsExt | undefined>> => {
 				throwIfAborted(signal);
 				const meta = buildReadcacheMeta(
 					pathKey,
@@ -318,13 +352,14 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 					end,
 					current.bytes.byteLength,
 					baseHash,
+					buildDebugInfo(scopeKey, baseHash, reason, overrides),
 				);
 				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
 				return attachMetaToBaseline(baselineResult, meta);
 			};
 
 			if (!baseText) {
-				return fallbackResult();
+				return fallbackResult("base_object_missing", { baseObjectFound: false });
 			}
 
 			if (scopeKey !== SCOPE_FULL) {
@@ -339,35 +374,43 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 						end,
 						current.bytes.byteLength,
 						baseHash,
+						buildDebugInfo(scopeKey, baseHash, "range_slice_unchanged", { outsideRangeChanged: true }),
 					);
 					const marker = buildUnchangedMarker(scopeKey, start, end, totalLines, true);
 					await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
 					return buildMarkerResult(marker, meta);
 				}
-				return fallbackResult();
+				return fallbackResult("range_slice_changed", { outsideRangeChanged: true });
 			}
 
 			const baseBytes = Buffer.byteLength(baseText, "utf-8");
 			const largestBytes = Math.max(baseBytes, current.bytes.byteLength);
 			if (largestBytes > MAX_DIFF_FILE_BYTES) {
-				return fallbackResult();
+				return fallbackResult("diff_file_too_large_bytes", { diffAttempted: true, largestBytes });
 			}
 
 			const maxLines = Math.max(splitLines(baseText).length, totalLines);
 			if (maxLines > MAX_DIFF_FILE_LINES) {
-				return fallbackResult();
+				return fallbackResult("diff_file_too_large_lines", { diffAttempted: true, maxLines });
 			}
 
 			throwIfAborted(signal);
 			const diff = computeUnifiedDiff(baseText, current.text, parsed.pathInput);
-			if (!diff || !isDiffUseful(diff.diffText, baseText, current.text)) {
-				return fallbackResult();
+			if (!diff) {
+				return fallbackResult("diff_unavailable_or_empty", { diffAttempted: true });
+			}
+			if (!isDiffUseful(diff.diffText, baseText, current.text)) {
+				return fallbackResult("diff_not_useful", { diffAttempted: true, diffBytes: diff.diffBytes });
 			}
 
 			const diffPayload = buildDiffPayload(diff.changedLines, totalLines, diff.diffText);
 			const truncation = truncateForReadcache(diffPayload);
 			if (truncation.truncated) {
-				return fallbackResult();
+				return fallbackResult("diff_payload_truncated", {
+					diffAttempted: true,
+					diffBytes: diff.diffBytes,
+					diffChangedLines: diff.changedLines,
+				});
 			}
 
 			throwIfAborted(signal);
@@ -381,6 +424,11 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 				end,
 				current.bytes.byteLength,
 				baseHash,
+				buildDebugInfo(scopeKey, baseHash, "diff_emitted", {
+					diffAttempted: true,
+					diffBytes: diff.diffBytes,
+					diffChangedLines: diff.changedLines,
+				}),
 			);
 			await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
 			return buildTextResult(truncation.content, meta, truncation.truncated ? truncation : undefined);

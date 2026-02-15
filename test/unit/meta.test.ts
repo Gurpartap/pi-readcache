@@ -21,11 +21,28 @@ describe("meta", () => {
 			rangeStart: 1,
 			rangeEnd: 42,
 			bytes: 512,
+			debug: {
+				reason: "no_base_hash",
+				scope: "full",
+				baseHashFound: false,
+				diffAttempted: false,
+			},
 		});
 
 		expect(isReadCacheMetaV1(meta)).toBe(true);
 		expect(isReadCacheMetaV1({ ...meta, totalLines: 0 })).toBe(false);
 		expect(isReadCacheMetaV1({ ...meta, scopeKey: "r:9:2" })).toBe(false);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				debug: {
+					reason: "not-a-reason",
+					scope: "full",
+					baseHashFound: false,
+					diffAttempted: false,
+				},
+			} as unknown),
+		).toBe(false);
 		expect(
 			isReadCacheMetaV1({
 				...meta,

@@ -12,6 +12,32 @@ export interface ScopeTrust {
 
 export type ReadCacheMode = "full" | "unchanged" | "unchanged_range" | "diff" | "full_fallback";
 
+export type ReadCacheDebugReason =
+	| "no_base_hash"
+	| "hash_match"
+	| "base_object_missing"
+	| "range_slice_unchanged"
+	| "range_slice_changed"
+	| "diff_file_too_large_bytes"
+	| "diff_file_too_large_lines"
+	| "diff_unavailable_or_empty"
+	| "diff_not_useful"
+	| "diff_payload_truncated"
+	| "diff_emitted";
+
+export interface ReadCacheDebugV1 {
+	reason: ReadCacheDebugReason;
+	scope: "full" | "range";
+	baseHashFound: boolean;
+	diffAttempted: boolean;
+	outsideRangeChanged?: boolean;
+	baseObjectFound?: boolean;
+	largestBytes?: number;
+	maxLines?: number;
+	diffBytes?: number;
+	diffChangedLines?: number;
+}
+
 export interface ReadCacheMetaV1 {
 	v: 1;
 	pathKey: string;
@@ -23,6 +49,7 @@ export interface ReadCacheMetaV1 {
 	rangeStart: number;
 	rangeEnd: number;
 	bytes: number;
+	debug?: ReadCacheDebugV1;
 }
 
 export interface ReadCacheInvalidationV1 {

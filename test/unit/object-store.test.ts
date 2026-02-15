@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, stat, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,6 +8,7 @@ import {
 	loadObject,
 	objectPathForHash,
 	persistObjectIfAbsent,
+	pruneObjectsOlderThan,
 } from "../../src/object-store.js";
 
 describe("object-store", () => {
@@ -52,5 +53,28 @@ describe("object-store", () => {
 		const stats = await getStoreStats(repoRoot);
 		expect(stats.objects).toBe(2);
 		expect(stats.bytes).toBeGreaterThan(0);
+	});
+
+	it("prunes object files older than max age", async () => {
+		const repoRoot = await mkdtemp(join(tmpdir(), "pi-readcache-store-"));
+		const freshText = "fresh";
+		const staleText = "stale";
+		const freshHash = hashText(freshText);
+		const staleHash = hashText(staleText);
+
+		await persistObjectIfAbsent(repoRoot, freshHash, freshText);
+		await persistObjectIfAbsent(repoRoot, staleHash, staleText);
+
+		const stalePath = objectPathForHash(repoRoot, staleHash);
+		const nowMs = Date.now();
+		const staleMs = nowMs - 25 * 60 * 60 * 1000;
+		await utimes(stalePath, staleMs / 1000, staleMs / 1000);
+
+		const result = await pruneObjectsOlderThan(repoRoot, 24 * 60 * 60 * 1000, nowMs);
+		expect(result.scanned).toBe(2);
+		expect(result.deleted).toBe(1);
+		expect(await loadObject(repoRoot, staleHash)).toBeUndefined();
+		expect(await loadObject(repoRoot, freshHash)).toBe(freshText);
+		await expect(stat(stalePath)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });
