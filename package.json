@@ -1,6 +1,6 @@
 {
   "name": "pi-readcache",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "🧠 Pi extension that optimizes read tool calls with replay-aware caching and compaction-safe trust reconstruction",
   "author": "Gurpartap Singh",
   "license": "MIT",
