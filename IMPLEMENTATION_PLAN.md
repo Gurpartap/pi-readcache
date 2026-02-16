@@ -108,8 +108,8 @@ Create `src/constants.ts`:
 - limits:
   - `MAX_DIFF_FILE_BYTES` (e.g. 2 MiB)
   - `MAX_DIFF_FILE_LINES` (e.g. 12k)
-  - `MAX_DIFF_TO_BASE_RATIO` (e.g. 1.0)
-- `MAX_DIFF_TO_BASE_LINE_RATIO` (e.g. 1.0)
+  - `MAX_DIFF_TO_BASE_RATIO` (e.g. 0.9)
+  - `MAX_DIFF_TO_BASE_LINE_RATIO` (e.g. 0.85)
 - object store paths:
   - `.pi/readcache/objects`
   - `.pi/readcache/tmp`

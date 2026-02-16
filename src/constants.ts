@@ -5,8 +5,8 @@ export const SCOPE_FULL = "full" as const;
 
 export const MAX_DIFF_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_DIFF_FILE_LINES = 12_000;
-export const MAX_DIFF_TO_BASE_RATIO = 1.0;
-export const MAX_DIFF_TO_BASE_LINE_RATIO = 1.0;
+export const MAX_DIFF_TO_BASE_RATIO = 0.9;
+export const MAX_DIFF_TO_BASE_LINE_RATIO = 0.85;
 
 export const DEFAULT_EXCLUDED_PATH_PATTERNS = [
 	".env*",

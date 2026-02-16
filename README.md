@@ -66,6 +66,21 @@ After installation, you can use pi normally. If pi is already running when you i
 - First read after that barrier for a path/scope will re-anchor with baseline (`full`/`baseline_fallback`).
 - For exact current file text, the assistant should still perform an actual `read` in current context.
 
+### Diff usefulness gate (why you sometimes get full content instead of a diff)
+
+For full-file reads, `mode: diff` is emitted only when the generated patch is clearly more useful than baseline text.
+
+Current defaults:
+- `MAX_DIFF_TO_BASE_RATIO = 0.9`
+  - if `diffBytes >= selectedBytes * 0.9`, diff is considered not useful and falls back to baseline (`mode: baseline_fallback`)
+- `MAX_DIFF_TO_BASE_LINE_RATIO = 0.85`
+  - if patch line count is greater than `selectedRequestedLines * 0.85`, diff is considered too large/noisy and falls back to baseline
+
+Why these defaults:
+- avoids near-full-file patch spam on high-churn edits
+- improves readability for the model versus very large hunks
+- keeps token savings meaningful when diff mode is used
+
 ---
 
 ## For extension developers (and curious cats)
