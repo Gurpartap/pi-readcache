@@ -91,7 +91,7 @@ interface ReadCacheMetaV1 {
   scopeKey: string;       // "full" | `r:${start}:${end}`
   servedHash: string;     // hash of current content served against
   baseHash?: string;      // hash used as comparison base (if any)
-  mode: "full" | "unchanged" | "unchanged_range" | "diff" | "full_fallback";
+  mode: "full" | "unchanged" | "unchanged_range" | "diff" | "baseline_fallback";
   totalLines: number;
   rangeStart: number;
   rangeEnd: number;
@@ -109,7 +109,7 @@ Rules:
 - Do not store large payloads in metadata.
 - Do not rely on any metadata except `details.readcache.v === 1` with valid fields.
 - Validation requirements by mode:
-  - `mode in {"full", "full_fallback"}`: `baseHash` is optional.
+  - `mode in {"full", "baseline_fallback"}`: `baseHash` is optional.
   - `mode in {"unchanged", "unchanged_range", "diff"}`: `baseHash` is required and must be non-empty.
 - Metadata parsing must be fail-open for replay:
   - invalid metadata is ignored (never throws),
@@ -236,7 +236,7 @@ Representation note:
 Process replay window entries in order (`seq` increments per encountered valid `ReadMeta` event). Invalidation events mutate trust but do not require their own sequence increments.
 
 Mode classes:
-- **Anchor modes**: `full`, `full_fallback` (can establish trust from empty state)
+- **Anchor modes**: `full`, `baseline_fallback` (can establish trust from empty state)
 - **Derived modes**: `unchanged`, `diff`, `unchanged_range` (must validate base-chain trust first)
 
 #### A) Read tool results (`message -> toolResult(read)` with valid `details.readcache`)
@@ -252,7 +252,7 @@ Let:
 Transitions:
 
 1. Anchor modes (establish trust)
-- If `M in {"full", "full_fallback"}`:
+- If `M in {"full", "baseline_fallback"}`:
   - set `trust(pathKey, S) = { hash: H, seq }`
 
 2. Full unchanged (derived, guarded)
@@ -349,7 +349,7 @@ Event classes:
 | Event | Guard | State mutation | If guard fails |
 |---|---|---|---|
 | `mode=full`, any scope `S` | always | `trust(path,S) = {hash: servedHash, seq}` | n/a |
-| `mode=full_fallback`, any scope `S` | always | `trust(path,S) = {hash: servedHash, seq}` | n/a |
+| `mode=baseline_fallback`, any scope `S` | always | `trust(path,S) = {hash: servedHash, seq}` | n/a |
 | `mode=unchanged`, `S=full` | `baseHash` exists AND `trust(path,full)` exists AND `trust(path,full).hash == baseHash` AND `servedHash == baseHash` | `trust(path,full) = {hash: servedHash, seq}` | ignore event |
 | `mode=diff`, `S=full` | `baseHash` exists AND `trust(path,full)` exists AND `trust(path,full).hash == baseHash` | `trust(path,full) = {hash: servedHash, seq}` | ignore event |
 | `mode=unchanged_range`, `S=range` | `baseHash` exists AND ((`trust(path,S)` exists AND `trust(path,S).hash == baseHash`) OR (`trust(path,full)` exists AND `trust(path,full).hash == baseHash`)) | `trust(path,S) = {hash: servedHash, seq}` | ignore event |
@@ -385,10 +385,10 @@ digraph FullScopeTrust {
   U [label="U: Untrusted(full)"];
   T [label="T(h): Trusted(full, hash=h)"];
 
-  U -> T [label="full|full_fallback on full / h:=servedHash"];
+  U -> T [label="full|baseline_fallback on full / h:=servedHash"];
   U -> U [label="unchanged|diff guard fail / ignore"];
 
-  T -> T [label="full|full_fallback on full / h:=servedHash"];
+  T -> T [label="full|baseline_fallback on full / h:=servedHash"];
   T -> T [label="unchanged on full, baseHash==h, servedHash==baseHash / h:=servedHash"];
   T -> T [label="diff on full, baseHash==h / h:=servedHash"];
   T -> T [label="unchanged|diff guard fail / ignore"];
@@ -409,8 +409,8 @@ digraph RangeScopeTrust {
   TR [label="TR(hR): Trusted(range R, hash=hR)"];
   F  [shape=box, style=dashed, label="External full trust hF (optional)"];
 
-  UR -> TR [label="full|full_fallback on R / hR:=servedHash"];
-  TR -> TR [label="full|full_fallback on R / hR:=servedHash"];
+  UR -> TR [label="full|baseline_fallback on R / hR:=servedHash"];
+  TR -> TR [label="full|baseline_fallback on R / hR:=servedHash"];
 
   UR -> TR [label="unchanged_range on R, baseHash==hF / hR:=servedHash"];
   TR -> TR [label="unchanged_range on R, baseHash==hR OR baseHash==hF / hR:=servedHash"];
@@ -426,7 +426,7 @@ digraph RangeScopeTrust {
 
 #### 7.5.7 Safety consequence
 
-A replay window containing only non-anchor entries (`unchanged`, `unchanged_range`, `diff`) cannot bootstrap trust unless guards validate against already trusted base. Combined with the strict compaction barrier (`latest compaction + 1`), the first post-compaction read for any scope is baseline (`full`/`full_fallback`) until a new post-compaction anchor is created.
+A replay window containing only non-anchor entries (`unchanged`, `unchanged_range`, `diff`) cannot bootstrap trust unless guards validate against already trusted base. Combined with the strict compaction barrier (`latest compaction + 1`), the first post-compaction read for any scope is baseline (`full`/`baseline_fallback`) until a new post-compaction anchor is created.
 
 ---
 
@@ -462,7 +462,7 @@ Execution-model note:
    - set `mode = unchanged` / `unchanged_range`
 9. Else (`baseHash !== currentHash`):
    - load `baseContent` from object store by `baseHash`
-   - if missing: return baseline output, `mode = full_fallback`
+   - if missing: return baseline output, `mode = baseline_fallback`
    - if range scope:
      - compare exact numeric slices from base and current (`oldSlice`, `newSlice`)
      - if equal: unchanged_range marker
@@ -470,7 +470,7 @@ Execution-model note:
    - if full scope:
      - compute unified diff base->current
      - if diff is useful and under limits: return diff payload (`mode = diff`)
-     - else: baseline output (`mode = full_fallback`)
+     - else: baseline output (`mode = baseline_fallback`)
 10. Persist current content in object store if absent.
 11. Include `details.readcache` metadata in returned tool result.
 12. Update in-flight overlay with trust candidate for this scope (`hash = currentHash`, fresh overlay sequence).
@@ -622,6 +622,7 @@ Set conservative thresholds:
 - skip diff when file bytes exceed threshold (e.g. 2 MiB)
 - skip diff when line count exceeds threshold (e.g. 12k)
 - skip diff if diff bytes >= selected bytes
+- skip diff if diff line count > selected requested line count (line-ratio guard)
 
 ### 16.4 Range path simplification
 
@@ -636,7 +637,7 @@ This is safer and cheaper than complex range diffing.
 
 Report for current active branch context:
 - tracked files/scopes in reconstructed knowledge
-- counts by mode from replay window (`full`, `unchanged`, `unchanged_range`, `diff`, `full_fallback`)
+- counts by mode from replay window (`full`, `unchanged`, `unchanged_range`, `diff`, `baseline_fallback`)
 - approximate token savings for current branch window
 - object store stats (file count, bytes) best-effort
 
@@ -743,7 +744,7 @@ executeRead(params, ctx, signal): ToolResult {
   if (!baseText) {
     out = baseline.execute(...)
     persistObjectIfAbsent(currentHash, file.text)
-    attachReadcacheMeta(out, mode="full_fallback", servedHash=currentHash, baseHash)
+    attachReadcacheMeta(out, mode="baseline_fallback", servedHash=currentHash, baseHash)
     overlaySet(pathKey, scopeKey, currentHash)
     return out
   }
@@ -759,7 +760,7 @@ executeRead(params, ctx, signal): ToolResult {
 
     // Safe default for changed range
     out = baseline.execute(...)
-    attachReadcacheMeta(out, mode="full_fallback", servedHash=currentHash, baseHash)
+    attachReadcacheMeta(out, mode="baseline_fallback", servedHash=currentHash, baseHash)
     persistObjectIfAbsent(currentHash, file.text)
     overlaySet(pathKey, scopeKey, currentHash)
     return out
@@ -768,7 +769,7 @@ executeRead(params, ctx, signal): ToolResult {
   diff = computeUnifiedDiff(baseText, file.text)
   if (!diff.useful) {
     out = baseline.execute(...)
-    attachReadcacheMeta(out, mode="full_fallback", servedHash=currentHash, baseHash)
+    attachReadcacheMeta(out, mode="baseline_fallback", servedHash=currentHash, baseHash)
   } else {
     out = diffResult(diff)
     attachReadcacheMeta(out, mode="diff", servedHash=currentHash, baseHash)
@@ -803,7 +804,7 @@ executeRead(params, ctx, signal): ToolResult {
 12. `/tree` to pre-compaction point -> replay uses historical state correctly
 13. replay boundary uses strict latest-compaction barrier (`start = latest compaction + 1`, never `firstKeptEntryId`)
 14. latest compaction wins when multiple compactions exist on active path
-15. first post-compaction read is baseline (`full`/`full_fallback`) for full and range scopes
+15. first post-compaction read is baseline (`full`/`baseline_fallback`) for full and range scopes
 16. `/fork` then read -> independent branch replay state
 17. session switch/resume -> correct replay with no sidecar dependence
 18. stale range trust does not override fresher full trust (seq freshness selection)

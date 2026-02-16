@@ -22,7 +22,7 @@ Current `src/replay.ts` applies read metadata unconditionally:
 - this includes modes: `unchanged`, `unchanged_range`, `diff`
 
 Current knowledge model stores only hash strings (no proof freshness/state), so replay cannot distinguish:
-- anchor evidence (`full`/`full_fallback`) from
+- anchor evidence (`full`/`baseline_fallback`) from
 - derived evidence (`unchanged`/`diff`) that requires prior trust.
 
 Result: replay can incorrectly bootstrap trust from non-anchor entries inside post-compaction replay window.
@@ -82,7 +82,7 @@ Let:
 
 ### 4.1 Anchor events (can establish trust)
 
-If `M in {"full", "full_fallback"}`:
+If `M in {"full", "baseline_fallback"}`:
 - set `trust(path, S) = { hash: H, seq }`
 
 ### 4.2 Derived full-scope unchanged
@@ -226,7 +226,7 @@ Do not use unsequenced map preference; freshness tie-break is required.
 ### Changes
 1. Strengthen validation:
    - modes `unchanged`, `unchanged_range`, `diff` require non-empty `baseHash`.
-   - modes `full`, `full_fallback` may omit `baseHash`.
+   - modes `full`, `baseline_fallback` may omit `baseHash`.
 2. Keep parser fail-open (invalid entries ignored by replay).
 
 ### Backward compatibility
@@ -282,7 +282,7 @@ Add exact scenario:
 2. read same file => `mode=unchanged`
 3. append compaction with `firstKeptEntryId` pointing to unchanged entry
 4. read again
-5. assert next mode is `full` (or `full_fallback` if baseline path required), **not** `unchanged`
+5. assert next mode is `full` (or `baseline_fallback` if baseline path required), **not** `unchanged`
 
 This proves non-anchor entries cannot bootstrap trust post-boundary.
 

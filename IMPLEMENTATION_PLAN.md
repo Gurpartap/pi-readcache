@@ -109,6 +109,7 @@ Create `src/constants.ts`:
   - `MAX_DIFF_FILE_BYTES` (e.g. 2 MiB)
   - `MAX_DIFF_FILE_LINES` (e.g. 12k)
   - `MAX_DIFF_TO_BASE_RATIO` (e.g. 1.0)
+- `MAX_DIFF_TO_BASE_LINE_RATIO` (e.g. 1.0)
 - object store paths:
   - `.pi/readcache/objects`
   - `.pi/readcache/tmp`
@@ -158,7 +159,7 @@ Acceptance:
 - resilient to malformed historical entries
 - invalid entries never throw in replay
 - mode-specific validation enforced:
-  - `full`/`full_fallback` may omit `baseHash`
+  - `full`/`baseline_fallback` may omit `baseHash`
   - `unchanged`/`unchanged_range`/`diff` must include non-empty `baseHash`
 
 ---
@@ -230,7 +231,7 @@ Functions:
 
 Policy:
 - only for `full` scope by default
-- if diff unusable -> fallback full baseline
+- if diff unusable by byte ratio or line ratio -> fallback full baseline
 
 Acceptance:
 - deterministic output
@@ -259,7 +260,7 @@ Replay boundary algorithm:
 4. replay read metadata and invalidations from start->leaf with monotonic `seq`
 
 Guarded transitions (must match spec exactly):
-- Anchor modes (`full`, `full_fallback`) establish trust for their scope.
+- Anchor modes (`full`, `baseline_fallback`) establish trust for their scope.
 - Derived modes require validated base chain:
   - `unchanged(full)` applies only when trusted full hash equals `baseHash` (and `servedHash == baseHash`).
   - `diff(full)` applies only when trusted full hash equals `baseHash`.
@@ -284,7 +285,7 @@ Acceptance:
 ## 5.8 `telemetry.ts`
 
 Optional lightweight metrics from replay window:
-- counts by mode (`full`, `unchanged`, `unchanged_range`, `diff`, `full_fallback`)
+- counts by mode (`full`, `unchanged`, `unchanged_range`, `diff`, `baseline_fallback`)
 - estimated savings for current active context window
 
 Do not make correctness depend on telemetry.
@@ -468,9 +469,9 @@ Acceptance:
   - read on branch A, /tree branch B, read correctness
 
 - `compaction-boundary.test.ts`
-  - first read after active compaction is baseline (`full`/`full_fallback`)
+  - first read after active compaction is baseline (`full`/`baseline_fallback`)
   - latest compaction wins when multiple compactions exist on active path
-  - first post-compaction range read is baseline range (`full`/`full_fallback`)
+  - first post-compaction range read is baseline range (`full`/`baseline_fallback`)
   - `/tree` navigation to pre-compaction node restores pre-compaction replay visibility
   - regression IDs:
     - `first_read_after_compaction_is_baseline_even_if_precompaction_anchor_exists`

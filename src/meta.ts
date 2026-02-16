@@ -35,7 +35,7 @@ function normalizeReadCacheMode(value: unknown): ReadCacheMode | undefined {
 	if (value === "diff") {
 		return "diff";
 	}
-	if (value === "baseline_fallback" || value === "full_fallback") {
+	if (value === "baseline_fallback") {
 		return "baseline_fallback";
 	}
 	return undefined;

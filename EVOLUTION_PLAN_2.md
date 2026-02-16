@@ -25,7 +25,7 @@ This is branch-local and compaction-local:
 ## Expected Behavior After Fix
 
 1. First `read` after the latest active compaction for a file/scope:
-   - `mode = full` or `full_fallback`
+   - `mode = full` or `baseline_fallback`
    - never `unchanged`/`diff` purely from pre-compaction evidence.
 
 2. Subsequent reads on same branch after post-compaction anchor:
@@ -107,7 +107,7 @@ Add/adjust scenarios:
 1. `first_read_after_compaction_is_baseline_even_if_precompaction_anchor_exists`
    - pre: full anchor + unchanged/diff before compaction
    - compact
-   - post: first read must be `full`/`full_fallback`
+   - post: first read must be `full`/`baseline_fallback`
 
 2. `latest_compaction_wins_when_multiple_compactions_exist`
    - create two compactions on active path
@@ -188,7 +188,7 @@ From repo root:
 
 - [ ] Replay boundary always starts at latest active `compaction+1`.
 - [ ] Pre-compaction trust is not used post-compaction.
-- [ ] First post-compaction read is baseline (`full`/`full_fallback`) for requested scope.
+- [ ] First post-compaction read is baseline (`full`/`baseline_fallback`) for requested scope.
 - [ ] Guarded trust-state transitions still pass all tests.
 - [ ] Tree navigation behavior remains branch-correct.
 - [ ] Docs (`IMPLEMENTATION_SPEC.md`, `IMPLEMENTATION_PLAN.md`) match implemented policy exactly.
