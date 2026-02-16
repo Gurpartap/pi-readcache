@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { registerReadcacheCommands } from "./src/commands.js";
 import { clearReplayRuntimeState, createReplayRuntimeState } from "./src/replay.js";
 import { pruneObjectsOlderThan } from "./src/object-store.js";
@@ -6,7 +6,7 @@ import { createReadOverrideTool } from "./src/tool.js";
 
 export default function (pi: ExtensionAPI): void {
 	const runtimeState = createReplayRuntimeState();
-	pi.registerTool(createReadOverrideTool(runtimeState));
+	pi.registerTool(createReadOverrideTool(runtimeState) as unknown as ToolDefinition);
 	registerReadcacheCommands(pi, runtimeState);
 
 	const clearCaches = (): void => {

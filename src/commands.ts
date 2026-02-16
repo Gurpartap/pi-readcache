@@ -5,6 +5,7 @@ import type {
 	ExtensionAPI,
 	ExtensionCommandContext,
 	ExtensionContext,
+	ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { READCACHE_CUSTOM_TYPE, SCOPE_FULL, scopeRange } from "./constants.js";
@@ -324,5 +325,5 @@ export function registerReadcacheCommands(pi: ExtensionAPI, runtimeState: Replay
 		},
 	});
 
-	pi.registerTool(createReadcacheRefreshTool(pi, runtimeState));
+	pi.registerTool(createReadcacheRefreshTool(pi, runtimeState) as unknown as ToolDefinition);
 }
