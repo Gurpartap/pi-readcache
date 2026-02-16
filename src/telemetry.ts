@@ -19,7 +19,7 @@ function createModeCounts(): ReadCacheModeCounts {
 		unchanged: 0,
 		unchanged_range: 0,
 		diff: 0,
-		full_fallback: 0,
+		baseline_fallback: 0,
 	};
 }
 

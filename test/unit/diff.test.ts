@@ -30,6 +30,7 @@ describe("diff", () => {
 				maxFileBytes: 1024,
 				maxFileLines: 100,
 				maxDiffToBaseRatio: 100,
+				maxDiffToBaseLineRatio: 100,
 			}),
 		).toBe(true);
 
@@ -37,13 +38,23 @@ describe("diff", () => {
 			maxFileBytes: 1024,
 			maxFileLines: 100,
 			maxDiffToBaseRatio: 1,
+			maxDiffToBaseLineRatio: 100,
 		});
 		expect(notUsefulByRatio).toBe(false);
+
+		const notUsefulByLineRatio = isDiffUseful("--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b", "a", "b", {
+			maxFileBytes: 1024,
+			maxFileLines: 100,
+			maxDiffToBaseRatio: 100,
+			maxDiffToBaseLineRatio: 1,
+		});
+		expect(notUsefulByLineRatio).toBe(false);
 
 		const notUsefulByLineLimit = isDiffUseful("@@ -1 +1 @@\n-a\n+b", "a\n".repeat(200), "b\n".repeat(200), {
 			maxFileBytes: 1024 * 1024,
 			maxFileLines: 50,
 			maxDiffToBaseRatio: 2,
+			maxDiffToBaseLineRatio: 100,
 		});
 		expect(notUsefulByLineLimit).toBe(false);
 	});

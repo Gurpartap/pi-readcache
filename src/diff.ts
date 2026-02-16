@@ -2,6 +2,7 @@ import { formatPatch, structuredPatch } from "diff";
 import {
 	MAX_DIFF_FILE_BYTES,
 	MAX_DIFF_FILE_LINES,
+	MAX_DIFF_TO_BASE_LINE_RATIO,
 	MAX_DIFF_TO_BASE_RATIO,
 } from "./constants.js";
 
@@ -11,6 +12,7 @@ export interface DiffLimits {
 	maxFileBytes: number;
 	maxFileLines: number;
 	maxDiffToBaseRatio: number;
+	maxDiffToBaseLineRatio: number;
 }
 
 export interface DiffComputation {
@@ -25,6 +27,7 @@ export const DEFAULT_DIFF_LIMITS: DiffLimits = {
 	maxFileBytes: MAX_DIFF_FILE_BYTES,
 	maxFileLines: MAX_DIFF_FILE_LINES,
 	maxDiffToBaseRatio: MAX_DIFF_TO_BASE_RATIO,
+	maxDiffToBaseLineRatio: MAX_DIFF_TO_BASE_LINE_RATIO,
 };
 
 function sanitizePathForPatch(pathDisplay: string): string {
@@ -125,6 +128,15 @@ export function isDiffUseful(
 	if (diffBytes === 0) {
 		return false;
 	}
+	if (diffBytes >= selectedBytes * limits.maxDiffToBaseRatio) {
+		return false;
+	}
 
-	return diffBytes < selectedBytes * limits.maxDiffToBaseRatio;
+	const selectedRequestedLines = lineCount(selectedCurrentText);
+	const diffLines = lineCount(diffText);
+	if (diffLines > selectedRequestedLines * limits.maxDiffToBaseLineRatio) {
+		return false;
+	}
+
+	return true;
 }

@@ -85,13 +85,13 @@ describe("integration: tree navigation", () => {
 
 		await writeFile(filePath, "alpha\nBETA\ngamma", "utf-8");
 		const secondRead = await tool.execute("call-2", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(secondRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(secondRead.details?.readcache?.mode).toBe("baseline_fallback");
 		appendReadResult(sessionManager, "call-2", secondRead);
 
 		sessionManager.branch(firstEntryId);
 
 		const thirdRead = await tool.execute("call-3", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(thirdRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(thirdRead.details?.readcache?.mode).toBe("baseline_fallback");
 		expect(getText(thirdRead)).toContain("BETA");
 	});
 
@@ -123,7 +123,7 @@ describe("integration: tree navigation", () => {
 
 		await writeFile(filePath, "v2", "utf-8");
 		const sourceSecond = await tool.execute("source-2", { path: "sample.txt" }, undefined, undefined, sourceCtx);
-		expect(sourceSecond.details?.readcache?.mode).toBe("full_fallback");
+		expect(sourceSecond.details?.readcache?.mode).toBe("baseline_fallback");
 		appendReadResult(sourceSession, "source-2", sourceSecond);
 
 		await writeFile(filePath, "v1", "utf-8");

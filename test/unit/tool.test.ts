@@ -181,7 +181,7 @@ describe("tool", () => {
 
 		await writeFile(filePath, `b${large.slice(1)}`, "utf-8");
 		const secondRead = await tool.execute("call-6", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(secondRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(secondRead.details?.readcache?.mode).toBe("baseline_fallback");
 		expect(secondRead.details?.readcache?.debug).toMatchObject({
 			reason: "diff_file_too_large_bytes",
 			scope: "full",
@@ -255,7 +255,7 @@ describe("tool", () => {
 		await writeFile(filePath, "one\nTWO\nthree", "utf-8");
 		const secondRead = await tool.execute("call-11", { path: "sample.txt" }, undefined, undefined, ctx);
 
-		expect(secondRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(secondRead.details?.readcache?.mode).toBe("baseline_fallback");
 		const text = secondRead.content[0] && secondRead.content[0].type === "text" ? secondRead.content[0].text : "";
 		expect(text).toContain("TWO");
 	});

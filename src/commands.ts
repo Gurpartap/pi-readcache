@@ -51,7 +51,7 @@ function formatModeCounts(modeCounts: ReturnType<typeof collectReplayTelemetry>[
 		`unchanged=${modeCounts.unchanged}`,
 		`unchanged_range=${modeCounts.unchanged_range}`,
 		`diff=${modeCounts.diff}`,
-		`full_fallback=${modeCounts.full_fallback}`,
+		`baseline_fallback=${modeCounts.baseline_fallback}`,
 	].join(", ");
 }
 

@@ -87,9 +87,16 @@ describe("meta", () => {
 		expect(
 			isReadCacheMetaV1({
 				...meta,
-				mode: "full_fallback",
+				mode: "baseline_fallback",
 				baseHash: undefined,
 			}),
+		).toBe(true);
+		expect(
+			isReadCacheMetaV1({
+				...meta,
+				mode: "full_fallback",
+				baseHash: undefined,
+			} as unknown),
 		).toBe(true);
 	});
 
@@ -145,6 +152,23 @@ describe("meta", () => {
 
 		expect(extractReadMetaFromSessionEntry(validEntry)).toEqual(meta);
 		expect(extractReadMetaFromSessionEntry(invalidEntry)).toBeUndefined();
+
+		const legacyModeEntry: SessionEntry = {
+			type: "message",
+			id: "legacy",
+			parentId: "1",
+			timestamp: new Date().toISOString(),
+			message: {
+				role: "toolResult",
+				toolCallId: "tool-legacy",
+				toolName: "read",
+				content: [{ type: "text", text: "legacy" }],
+				details: { readcache: { ...meta, mode: "full_fallback" } },
+				isError: false,
+				timestamp: Date.now(),
+			},
+		};
+		expect(extractReadMetaFromSessionEntry(legacyModeEntry)?.mode).toBe("baseline_fallback");
 	});
 
 	it("extracts invalidation entries from custom entries", () => {

@@ -10,7 +10,7 @@ export interface ScopeTrust {
 	seq: number;
 }
 
-export type ReadCacheMode = "full" | "unchanged" | "unchanged_range" | "diff" | "full_fallback";
+export type ReadCacheMode = "full" | "unchanged" | "unchanged_range" | "diff" | "baseline_fallback";
 
 export type ReadCacheDebugReason =
 	| "no_base_hash"

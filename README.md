@@ -23,7 +23,7 @@ When the extension is active, `read` may return:
 - unchanged marker (`mode: unchanged`)
 - unchanged range marker (`mode: unchanged_range`)
 - unified diff for full-file reads (`mode: diff`)
-- baseline fallback (`mode: full_fallback`)
+- baseline fallback (`mode: baseline_fallback`)
 
 Plus:
 - `/readcache-status` to inspect replay/coverage/savings
@@ -50,9 +50,9 @@ After installation, you can use pi normally. If pi is already running when you i
 
 | Action | Command | Expected result |
 |---|---|---|
-| Baseline read | `read src/foo.ts` | `mode: full` or `mode: full_fallback` |
+| Baseline read | `read src/foo.ts` | `mode: full` or `mode: baseline_fallback` |
 | Repeat read (no file change) | `read src/foo.ts` | `[readcache: unchanged, ...]` |
-| Range read | `read src/foo.ts:1-120` | `mode: full`, `full_fallback`, or `unchanged_range` |
+| Range read | `read src/foo.ts:1-120` | `mode: full`, `baseline_fallback`, or `unchanged_range` |
 | Inspect replay/cache state | `/readcache-status` | tracked scopes, replay window, mode counts, estimated savings |
 | Invalidate full scope | `/readcache-refresh src/foo.ts` | next full read re-anchors |
 | Invalidate range scope | `/readcache-refresh src/foo.ts 1-120` | next range read re-anchors |
@@ -63,7 +63,7 @@ After installation, you can use pi normally. If pi is already running when you i
 - Compaction is a strict replay barrier for trust reconstruction:
   - replay starts at the latest active `compaction + 1`.
   - pre-compaction trust is not used after that barrier.
-- First read after that barrier for a path/scope will re-anchor with baseline (`full`/`full_fallback`).
+- First read after that barrier for a path/scope will re-anchor with baseline (`full`/`baseline_fallback`).
 - For exact current file text, the assistant should still perform an actual `read` in current context.
 
 ---
@@ -89,7 +89,7 @@ flowchart TD
   F -- no --> G[mode=full, attach metadata]
   F -- yes + same hash --> H[mode=unchanged/unchanged_range]
   F -- yes + full scope + useful diff --> I[mode=diff]
-  F -- otherwise --> J[mode=full_fallback]
+  F -- otherwise --> J[mode=baseline_fallback]
   G --> K[persist object + overlay trust]
   H --> K
   I --> K

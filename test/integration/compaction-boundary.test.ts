@@ -66,7 +66,7 @@ describe("integration: compaction replay boundary", () => {
 		const postCompactionRead = await tool.execute("call-3", { path: "sample.txt" }, undefined, undefined, ctx);
 		expect(postCompactionRead.details?.readcache?.mode).not.toBe("unchanged");
 		expect(postCompactionRead.details?.readcache?.mode).not.toBe("diff");
-		expect(["full", "full_fallback"]).toContain(postCompactionRead.details?.readcache?.mode);
+		expect(["full", "baseline_fallback"]).toContain(postCompactionRead.details?.readcache?.mode);
 	});
 
 	it("latest_compaction_wins_when_multiple_compactions_exist", async () => {
@@ -85,7 +85,7 @@ describe("integration: compaction replay boundary", () => {
 		sessionManager.appendCompaction("compact-1", entry1, 42);
 
 		const read2 = await tool.execute("call-b", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(["full", "full_fallback"]).toContain(read2.details?.readcache?.mode);
+		expect(["full", "baseline_fallback"]).toContain(read2.details?.readcache?.mode);
 		const entry2 = appendReadResult(sessionManager, "call-b", read2);
 
 		const read3 = await tool.execute("call-c", { path: "sample.txt" }, undefined, undefined, ctx);
@@ -97,7 +97,7 @@ describe("integration: compaction replay boundary", () => {
 		const postSecondCompactionRead = await tool.execute("call-d", { path: "sample.txt" }, undefined, undefined, ctx);
 		expect(postSecondCompactionRead.details?.readcache?.mode).not.toBe("unchanged");
 		expect(postSecondCompactionRead.details?.readcache?.mode).not.toBe("diff");
-		expect(["full", "full_fallback"]).toContain(postSecondCompactionRead.details?.readcache?.mode);
+		expect(["full", "baseline_fallback"]).toContain(postSecondCompactionRead.details?.readcache?.mode);
 		appendReadResult(sessionManager, "call-d", postSecondCompactionRead);
 
 		const readAfterBaseline = await tool.execute("call-e", { path: "sample.txt" }, undefined, undefined, ctx);
@@ -128,7 +128,7 @@ describe("integration: compaction replay boundary", () => {
 
 		const postCompactionRange = await tool.execute("call-range-3", { path: "sample.txt:3-5" }, undefined, undefined, ctx);
 		expect(postCompactionRange.details?.readcache?.mode).not.toBe("unchanged_range");
-		expect(["full", "full_fallback"]).toContain(postCompactionRange.details?.readcache?.mode);
+		expect(["full", "baseline_fallback"]).toContain(postCompactionRange.details?.readcache?.mode);
 		expect(getText(postCompactionRange)).toContain("line 3");
 	});
 
@@ -175,14 +175,14 @@ describe("integration: compaction replay boundary", () => {
 
 		await writeFile(filePath, "v2", "utf-8");
 		const readV2 = await tool.execute("call-tree-2", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(readV2.details?.readcache?.mode).toBe("full_fallback");
+		expect(readV2.details?.readcache?.mode).toBe("baseline_fallback");
 		const v2EntryId = appendReadResult(sessionManager, "call-tree-2", readV2);
 
 		sessionManager.appendCompaction("compact-tree", v2EntryId, 64);
 
 		await writeFile(filePath, "v3", "utf-8");
 		const readV3 = await tool.execute("call-tree-3", { path: "sample.txt" }, undefined, undefined, ctx);
-		expect(["full", "full_fallback"]).toContain(readV3.details?.readcache?.mode);
+		expect(["full", "baseline_fallback"]).toContain(readV3.details?.readcache?.mode);
 		appendReadResult(sessionManager, "call-tree-3", readV3);
 
 		sessionManager.branch(v1EntryId);

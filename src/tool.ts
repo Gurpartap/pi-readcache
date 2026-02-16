@@ -61,7 +61,7 @@ export const readToolSchema = Type.Object({
 export type ReadToolParams = Static<typeof readToolSchema>;
 
 function buildReadDescription(): string {
-	return `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Returns full text, unchanged marker, or unified diff. Treat output as authoritative for requested scope. Set bypass_cache=true to force baseline output for this call only. Use readcache_refresh only when output is insufficient for correctness across calls; it invalidates trust for the selected scope until that scope is re-anchored by a baseline read, and increases repeated-read context usage.`;
+	return `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Returns full text, unchanged marker, or unified diff. Treat output as authoritative for requested scope. Set bypass_cache=true to force baseline output for this call only. If an edit fails because exact old text was not found, re-read the same path and scope with bypass_cache=true before retrying edit. Use readcache_refresh only when output is insufficient for correctness across calls; it invalidates trust for the selected scope until that scope is re-anchored by a baseline read, and increases repeated-read context usage.`;
 }
 
 function hasImageContent(result: AgentToolResult<ReadToolDetails | undefined>): boolean {
@@ -390,7 +390,7 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 					pathKey,
 					scopeKey,
 					current.currentHash,
-					"full_fallback",
+					"baseline_fallback",
 					totalLines,
 					start,
 					end,

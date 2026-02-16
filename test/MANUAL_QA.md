@@ -28,7 +28,7 @@ All commands passed.
 | 2) Verify `read` is overridden | `test/unit/index.test.ts` asserts tool registration includes `read` | ✅ PASS |
 | 3) Repeated reads on unchanged file | `test/integration/refresh-invalidation.test.ts` (`unchangedRead`), `test/unit/tool.test.ts` repeated full read paths | ✅ PASS |
 | 4) Edit outside requested range -> `unchanged_range` | `test/integration/selective-range.test.ts` (`changes exist outside this range`) | ✅ PASS |
-| 5) Edit inside requested range -> fallback slice | `test/integration/selective-range.test.ts` (`full_fallback` for changed ranges and shifted ranges) | ✅ PASS |
+| 5) Edit inside requested range -> fallback slice | `test/integration/selective-range.test.ts` (`baseline_fallback` for changed ranges and shifted ranges) | ✅ PASS |
 | 6) Full-file changes -> diff path | `test/unit/tool.test.ts` (`emits full-scope diff output...`) | ✅ PASS |
 | 7) `/tree` branch switch has no stale base leakage | `test/integration/tree-navigation.test.ts` (`does not leak stale base hashes...`) | ✅ PASS |
 | 8) Compaction boundary handling is context-safe | `test/integration/compaction-boundary.test.ts` (strict barrier + multi-compaction + range + tree cases) | ✅ PASS |

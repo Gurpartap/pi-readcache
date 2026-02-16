@@ -22,14 +22,23 @@ function isNonNegativeInteger(value: unknown): value is number {
 	return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-function isReadCacheMode(value: unknown): value is ReadCacheMode {
-	return (
-		value === "full" ||
-		value === "unchanged" ||
-		value === "unchanged_range" ||
-		value === "diff" ||
-		value === "full_fallback"
-	);
+function normalizeReadCacheMode(value: unknown): ReadCacheMode | undefined {
+	if (value === "full") {
+		return "full";
+	}
+	if (value === "unchanged") {
+		return "unchanged";
+	}
+	if (value === "unchanged_range") {
+		return "unchanged_range";
+	}
+	if (value === "diff") {
+		return "diff";
+	}
+	if (value === "baseline_fallback" || value === "full_fallback") {
+		return "baseline_fallback";
+	}
+	return undefined;
 }
 
 function isReadCacheDebugReason(value: unknown): value is ReadCacheDebugV1["reason"] {
@@ -44,7 +53,8 @@ function isReadCacheDebugReason(value: unknown): value is ReadCacheDebugV1["reas
 		value === "diff_unavailable_or_empty" ||
 		value === "diff_not_useful" ||
 		value === "diff_payload_truncated" ||
-		value === "diff_emitted"
+		value === "diff_emitted" ||
+		value === "bypass_cache"
 	);
 }
 
@@ -111,48 +121,69 @@ export function isScopeKey(value: unknown): value is ScopeKey {
 	return Number.isInteger(start) && Number.isInteger(end) && start > 0 && end >= start;
 }
 
-export function isReadCacheMetaV1(value: unknown): value is ReadCacheMetaV1 {
+function parseReadCacheMetaV1(value: unknown): ReadCacheMetaV1 | undefined {
 	if (!isRecord(value)) {
-		return false;
+		return undefined;
 	}
 
 	if (value.v !== READCACHE_META_VERSION) {
-		return false;
+		return undefined;
 	}
 
 	if (typeof value.pathKey !== "string" || value.pathKey.length === 0) {
-		return false;
+		return undefined;
 	}
 
 	if (!isScopeKey(value.scopeKey)) {
-		return false;
+		return undefined;
 	}
 
 	if (typeof value.servedHash !== "string" || value.servedHash.length === 0) {
-		return false;
+		return undefined;
 	}
 
-	if (!isReadCacheMode(value.mode)) {
-		return false;
+	const mode = normalizeReadCacheMode(value.mode);
+	if (!mode) {
+		return undefined;
 	}
 
-	const requiresBaseHash = value.mode === "unchanged" || value.mode === "unchanged_range" || value.mode === "diff";
+	const requiresBaseHash = mode === "unchanged" || mode === "unchanged_range" || mode === "diff";
 	if (requiresBaseHash) {
 		if (typeof value.baseHash !== "string" || value.baseHash.length === 0) {
-			return false;
+			return undefined;
 		}
 	} else if (value.baseHash !== undefined && (typeof value.baseHash !== "string" || value.baseHash.length === 0)) {
-		return false;
+		return undefined;
 	}
 
-	return (
-		isPositiveInteger(value.totalLines) &&
-		isPositiveInteger(value.rangeStart) &&
-		isPositiveInteger(value.rangeEnd) &&
-		value.rangeEnd >= value.rangeStart &&
-		isNonNegativeInteger(value.bytes) &&
-		(value.debug === undefined || isReadCacheDebugV1(value.debug))
-	);
+	if (
+		!isPositiveInteger(value.totalLines) ||
+		!isPositiveInteger(value.rangeStart) ||
+		!isPositiveInteger(value.rangeEnd) ||
+		value.rangeEnd < value.rangeStart ||
+		!isNonNegativeInteger(value.bytes) ||
+		(value.debug !== undefined && !isReadCacheDebugV1(value.debug))
+	) {
+		return undefined;
+	}
+
+	return {
+		v: READCACHE_META_VERSION,
+		pathKey: value.pathKey,
+		scopeKey: value.scopeKey,
+		servedHash: value.servedHash,
+		...(typeof value.baseHash === "string" ? { baseHash: value.baseHash } : {}),
+		mode,
+		totalLines: value.totalLines,
+		rangeStart: value.rangeStart,
+		rangeEnd: value.rangeEnd,
+		bytes: value.bytes,
+		...(value.debug !== undefined ? { debug: value.debug } : {}),
+	};
+}
+
+export function isReadCacheMetaV1(value: unknown): value is ReadCacheMetaV1 {
+	return parseReadCacheMetaV1(value) !== undefined;
 }
 
 export function isReadCacheInvalidationV1(value: unknown): value is ReadCacheInvalidationV1 {
@@ -202,11 +233,7 @@ export function extractReadMetaFromSessionEntry(entry: SessionEntry): ReadCacheM
 	}
 
 	const candidate = message.details.readcache;
-	if (!isReadCacheMetaV1(candidate)) {
-		return undefined;
-	}
-
-	return candidate;
+	return parseReadCacheMetaV1(candidate);
 }
 
 export function extractInvalidationFromSessionEntry(entry: SessionEntry): ReadCacheInvalidationV1 | undefined {

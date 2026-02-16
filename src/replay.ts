@@ -246,7 +246,7 @@ export function applyReadMetaTransition(
 	const fullTrust = getTrust(knowledge, pathKey, SCOPE_FULL);
 	const rangeTrust = scopeKey === SCOPE_FULL ? undefined : getTrust(knowledge, pathKey, scopeKey);
 
-	if (mode === "full" || mode === "full_fallback") {
+	if (mode === "full" || mode === "baseline_fallback") {
 		setTrust(knowledge, pathKey, scopeKey, servedHash, seq);
 		if (blockedRangesByPath && isRangeScope(scopeKey)) {
 			clearRangeBlocker(blockedRangesByPath, pathKey, scopeKey);

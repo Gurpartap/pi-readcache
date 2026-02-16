@@ -99,7 +99,7 @@ describe("integration: selective range behavior", () => {
 		appendReadResult(sessionManager, "call-range-2", unchangedRange);
 
 		const changedRange = await tool.execute("call-range-3", { path: "sample.txt:100-349" }, undefined, undefined, ctx);
-		expect(changedRange.details?.readcache?.mode).toBe("full_fallback");
+		expect(changedRange.details?.readcache?.mode).toBe("baseline_fallback");
 		expect(getText(changedRange)).toContain("line 300 updated");
 	});
 
@@ -127,7 +127,7 @@ describe("integration: selective range behavior", () => {
 			undefined,
 			ctx,
 		);
-		expect(shiftedRangeRead.details?.readcache?.mode).toBe("full_fallback");
+		expect(shiftedRangeRead.details?.readcache?.mode).toBe("baseline_fallback");
 		expect(getText(shiftedRangeRead)).toContain("line 99");
 	});
 });

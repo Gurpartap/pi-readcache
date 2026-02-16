@@ -16,7 +16,7 @@ This document maps `IMPLEMENTATION_SPEC.md` Section 21 and `IMPLEMENTATION_PLAN.
 | 5 | first range read full slice | `test/integration/selective-range.test.ts` (`first range read ... mode full`) | ✅ Covered |
 | 6 | unchanged same range marker | `test/integration/selective-range.test.ts` (`second range read ... unchanged_range`) | ✅ Covered |
 | 7 | changed outside range -> unchanged_range | `test/integration/selective-range.test.ts` (`changes exist outside this range`) | ✅ Covered |
-| 8 | changed affecting range -> fallback | `test/integration/selective-range.test.ts` (`full_fallback` on changed range) | ✅ Covered |
+| 8 | changed affecting range -> fallback | `test/integration/selective-range.test.ts` (`baseline_fallback` on changed range) | ✅ Covered |
 | 9 | insertion before range (shift) treated as range changed | `test/integration/selective-range.test.ts` (`line insertions before range`) | ✅ Covered |
 | 10 | malformed range rejected | `test/unit/tool.test.ts` (`rejects malformed path range suffixes...`) + `test/unit/path.test.ts` | ✅ Covered |
 | 11 | branch A then `/tree` branch B has no stale leakage | `test/integration/tree-navigation.test.ts` (`does not leak stale base hashes...`) | ✅ Covered |
