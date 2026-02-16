@@ -50,12 +50,18 @@ export const readToolSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+	bypass_cache: Type.Optional(
+		Type.Boolean({
+			description:
+				"If true, bypass readcache optimization for this call and return baseline read output for the requested scope",
+		}),
+	),
 });
 
 export type ReadToolParams = Static<typeof readToolSchema>;
 
 function buildReadDescription(): string {
-	return `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Returns full text, unchanged marker, or unified diff. Treat output as authoritative for requested scope. Use readcache_refresh only when output is insufficient for correctness; it forces full baseline payload for file and increases repeated-read context usage.`;
+	return `Read the contents of a file. Supports text files and images (jpg, png, gif, webp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. Returns full text, unchanged marker, or unified diff. Treat output as authoritative for requested scope. Set bypass_cache=true to force baseline output for this call only. Use readcache_refresh only when output is insufficient for correctness across calls; it invalidates trust for the selected scope until that scope is re-anchored by a baseline read, and increases repeated-read context usage.`;
 }
 
 function hasImageContent(result: AgentToolResult<ReadToolDetails | undefined>): boolean {
@@ -302,6 +308,24 @@ export function createReadOverrideTool(runtimeState: ReplayRuntimeState = create
 			throwIfAborted(signal);
 			const pathKey = parsed.absolutePath;
 			const scopeKey = scopeKeyForRange(start, end, totalLines);
+
+			if (params.bypass_cache === true) {
+				const meta = buildReadcacheMeta(
+					pathKey,
+					scopeKey,
+					current.currentHash,
+					"full",
+					totalLines,
+					start,
+					end,
+					current.bytes.byteLength,
+					undefined,
+					buildDebugInfo(scopeKey, undefined, "bypass_cache"),
+				);
+				await persistAndOverlay(runtimeState, ctx, pathKey, scopeKey, current.currentHash, current.text);
+				return attachMetaToBaseline(baselineResult, meta);
+			}
+
 			const knowledge = buildKnowledgeForLeaf(ctx.sessionManager, runtimeState);
 			const pathKnowledge = knowledge.get(pathKey);
 			const rangeScopeBlocked = isRangeScopeBlockedByInvalidation(

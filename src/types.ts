@@ -23,7 +23,8 @@ export type ReadCacheDebugReason =
 	| "diff_unavailable_or_empty"
 	| "diff_not_useful"
 	| "diff_payload_truncated"
-	| "diff_emitted";
+	| "diff_emitted"
+	| "bypass_cache";
 
 export interface ReadCacheDebugV1 {
 	reason: ReadCacheDebugReason;

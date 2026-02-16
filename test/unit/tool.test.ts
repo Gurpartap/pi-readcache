@@ -59,6 +59,77 @@ describe("tool", () => {
 		expect(result.details?.readcache?.rangeEnd).toBe(4);
 	});
 
+	it("bypass_cache forces baseline output for a full-scope read", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
+		await writeFile(join(cwd, "sample.txt"), "a\nb\nc", "utf-8");
+
+		const tool = createReadOverrideTool();
+		const sessionManager = SessionManager.inMemory(cwd);
+		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
+
+		const firstRead = await tool.execute("call-2a", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(firstRead.details?.readcache?.mode).toBe("full");
+		appendReadResult(sessionManager, "call-2a", firstRead);
+
+		const unchangedRead = await tool.execute("call-2b", { path: "sample.txt" }, undefined, undefined, ctx);
+		expect(unchangedRead.details?.readcache?.mode).toBe("unchanged");
+
+		const forcedRead = await tool.execute(
+			"call-2c",
+			{ path: "sample.txt", bypass_cache: true },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(forcedRead.details?.readcache?.mode).toBe("full");
+		expect(forcedRead.details?.readcache?.debug?.reason).toBe("bypass_cache");
+		const forcedText = forcedRead.content[0] && forcedRead.content[0].type === "text" ? forcedRead.content[0].text : "";
+		expect(forcedText).toContain("a\nb\nc");
+	});
+
+	it("bypass_cache on range scope forces one baseline read and then re-optimizes", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
+		await writeFile(join(cwd, "sample.txt"), "one\ntwo\nthree\nfour", "utf-8");
+
+		const tool = createReadOverrideTool();
+		const sessionManager = SessionManager.inMemory(cwd);
+		const ctx = { cwd, sessionManager } as unknown as ExtensionContext;
+
+		const firstRead = await tool.execute("call-2d", { path: "sample.txt" }, undefined, undefined, ctx);
+		appendReadResult(sessionManager, "call-2d", firstRead);
+
+		const firstRangeRead = await tool.execute(
+			"call-2e",
+			{ path: "sample.txt", offset: 2, limit: 2 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(firstRangeRead.details?.readcache?.mode).toBe("unchanged_range");
+		appendReadResult(sessionManager, "call-2e", firstRangeRead);
+
+		const forcedRangeRead = await tool.execute(
+			"call-2f",
+			{ path: "sample.txt", offset: 2, limit: 2, bypass_cache: true },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(forcedRangeRead.details?.readcache?.mode).toBe("full");
+		expect(forcedRangeRead.details?.readcache?.scopeKey).toBe("r:2:3");
+		expect(forcedRangeRead.details?.readcache?.debug?.reason).toBe("bypass_cache");
+		appendReadResult(sessionManager, "call-2f", forcedRangeRead);
+
+		const nextRangeRead = await tool.execute(
+			"call-2g",
+			{ path: "sample.txt", offset: 2, limit: 2 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(nextRangeRead.details?.readcache?.mode).toBe("unchanged_range");
+	});
+
 	it("emits full-scope diff output when changed content has a useful patch", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-readcache-tool-"));
 		const filePath = join(cwd, "sample.txt");
